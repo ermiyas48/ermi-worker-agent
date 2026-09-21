@@ -1,1 +1,57 @@
-<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>ERMI Worker</title><style>body{font-family:system-ui;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0}button{background:#111;color:#fff;border:none;padding:.9rem 1.8rem;border-radius:10px;font-size:1rem;cursor:pointer}</style></head><body><h1>ERMI Worker</h1><p id="s">Loading…</p><button id="b">Start ERMI Worker</button><p style="font-size:.85rem;color:#666;max-width:320px;text-align:center;margin-top:1.5rem">Owner token authorizes runs. ChatGPT session lives only in the server Chromium profile.</p><script>async function p(){try{const r=await fetch("/status");const j=await r.json();document.getElementById("s").textContent=j.label||j.state;}catch(e){document.getElementById("s").textContent=e.message;}}p();setInterval(p,3000);document.getElementById("b").onclick=()=>alert("Enter OWNER_TOKEN via Authorization header on POST /run. Full UI after remaining source is pushed.");</script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ERMI Worker</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#fff;color:#111;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem}
+h1{font-size:1.5rem;font-weight:600;margin-bottom:2rem;letter-spacing:-.02em}
+button#start{background:#111;color:#fff;border:none;padding:.9rem 1.8rem;font-size:1rem;border-radius:10px;cursor:pointer}
+button#start:hover:not(:disabled){background:#333}button#start:disabled{background:#9ca3af;cursor:not-allowed}
+.status-box{margin-top:2rem;padding:1rem 1.25rem;border:1px solid #e5e7eb;border-radius:10px;min-width:280px;text-align:center;background:#fafafa}
+.status-label{font-size:.85rem;color:#6b7280;margin-bottom:.35rem}
+.status-value{font-size:1.1rem;font-weight:600}
+.status-value.complete{color:#059669}.status-value.failed,.status-value.reauth{color:#dc2626}
+.status-value.running{color:#2563eb}.status-value.review{color:#d97706}
+.detail{margin-top:.5rem;font-size:.85rem;color:#6b7280;max-width:360px;word-break:break-word}
+.token-row{margin-top:1.5rem;display:flex;gap:.5rem;align-items:center}
+.token-row input{padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:8px;font-size:.9rem;width:220px}
+.token-row button{padding:.5rem .9rem;border:1px solid #d1d5db;background:#fff;border-radius:8px;cursor:pointer;font-size:.9rem}
+.hint{margin-top:2rem;font-size:.8rem;color:#9ca3af;text-align:center;max-width:320px}
+</style>
+</head>
+<body>
+<h1>ERMI Worker</h1>
+<button id="start">Start ERMI Worker</button>
+<div class="status-box">
+  <div class="status-label">Status</div>
+  <div class="status-value" id="status">Idle</div>
+  <div class="detail" id="detail"></div>
+</div>
+<div class="token-row">
+  <input type="password" id="token" placeholder="Owner token" autocomplete="off"/>
+  <button id="saveToken">Save</button>
+</div>
+<p class="hint">Owner token authorizes the run request only. ChatGPT session lives solely in the server Chromium profile.</p>
+<script>
+const statusEl=document.getElementById("status"),detailEl=document.getElementById("detail"),startBtn=document.getElementById("start"),tokenInput=document.getElementById("token");
+tokenInput.value=localStorage.getItem("ermiOwnerToken")||"";
+document.getElementById("saveToken").onclick=function(){localStorage.setItem("ermiOwnerToken",tokenInput.value.trim());detailEl.textContent="Token saved";};
+function token(){return tokenInput.value.trim()||localStorage.getItem("ermiOwnerToken")||"";}
+function setStatus(label,kind,detail){statusEl.textContent=label;statusEl.className="status-value "+(kind||"");detailEl.textContent=detail||"";}
+function classify(s){if(!s)return"";if(s==="COMPLETE")return"complete";if(s==="FAILED"||s==="REAUTH_REQUIRED")return s==="REAUTH_REQUIRED"?"reauth":"failed";if(s==="NEEDS_REVIEW")return"review";if(s==="IDLE")return"";return"running";}
+let pollTimer=null;
+async function poll(){try{const r=await fetch("/status");const j=await r.json();setStatus(j.label||j.state,classify(j.state),j.message||j.error||"");
+if(["COMPLETE","FAILED","NEEDS_REVIEW","REAUTH_REQUIRED","IDLE"].indexOf(j.state)!==-1){startBtn.disabled=false;if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
+else startBtn.disabled=true;}catch(e){setStatus("Unreachable","failed",e.message);}}
+startBtn.onclick=async function(){const t=token();if(!t){setStatus("Token required","failed","Enter and save owner token");return;}
+startBtn.disabled=true;setStatus("Starting…","running","");
+try{const r=await fetch("/run",{method:"POST",headers:{"Authorization":"Bearer "+t,"Content-Type":"application/json"}});
+const j=await r.json();if(!r.ok){setStatus(j.state||"Error","failed",j.error||JSON.stringify(j));startBtn.disabled=false;return;}
+setStatus(j.label||"Running","running","Run ID: "+(j.runId||"").slice(0,8));
+if(!pollTimer)pollTimer=setInterval(poll,1500);}catch(e){setStatus("Request failed","failed",e.message);startBtn.disabled=false;}};
+poll();setInterval(poll,4000);
+</script>
+</body>
+</html>
