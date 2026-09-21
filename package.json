@@ -1,0 +1,23 @@
+{
+  "name": "ermi-worker-agent",
+  "version": "1.0.0",
+  "description": "Server-hosted Chromium controller for ERMI Worker Agent runs in ChatGPT",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node src/test-workflow.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "playwright": "1.48.0",
+    "uuid": "^10.0.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
