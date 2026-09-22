@@ -1,8 +1,16 @@
 'use strict';
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { config, saveRunState, isSetupComplete } = require('./config');
-const { STATES, HUMAN_LABELS, ALLOWED_TRANSITIONS } = require('./states');
+const {
+  config,
+  saveRunState,
+  isSetupComplete,
+  resolvePrompt,
+  incrementRunCounter,
+  getRunCounter,
+  PROMPTS,
+} = require('./config');
+const { STATES, HUMAN_LABELS } = require('./states');
 const { getBrowserManager } = require('./browser-manager');
 const { ChatGPTAdapter } = require('./chatgpt-adapter');
 
@@ -15,41 +23,92 @@ class RunExecutor {
     this.log = logger || console;
     this.current = null;
     this.bm = getBrowserManager(this.log);
+    this.queue = [];
+    this.processing = false;
   }
+
   getStatus() {
     if (!this.current) {
-      return { state: STATES.IDLE, label: HUMAN_LABELS[STATES.IDLE], locked: this.bm.isLocked(), setupComplete: isSetupComplete() };
+      return {
+        state: STATES.IDLE,
+        label: HUMAN_LABELS[STATES.IDLE],
+        locked: this.bm.isLocked(),
+        setupComplete: isSetupComplete(),
+        runCounter: getRunCounter(),
+      };
     }
-    return { ...this.current, label: HUMAN_LABELS[this.current.state] || this.current.state, locked: this.bm.isLocked(), setupComplete: isSetupComplete() };
+    return {
+      ...this.current,
+      label: HUMAN_LABELS[this.current.state] || this.current.state,
+      locked: this.bm.isLocked(),
+      setupComplete: isSetupComplete(),
+      runCounter: getRunCounter(),
+    };
   }
+
   _transition(to, extra) {
     extra = extra || {};
     if (!this.current) return;
     const from = this.current.state;
     this.current.state = to;
     this.current.history = this.current.history || [];
-    this.current.history.push(Object.assign({ at: new Date().toISOString(), from: from, to: to }, extra));
+    this.current.history.push(Object.assign({ at: new Date().toISOString(), from, to }, extra));
     Object.assign(this.current, extra);
     saveRunState(this.current);
     this.log.info('STATE ' + from + ' → ' + to);
   }
-  async startRun() {
+
+  /**
+   * Accept a run into the queue. Increments persistent counter only when accepted.
+   * Prevents concurrent Chromium runs with real lock.
+   */
+  async startRun(opts) {
+    opts = opts || {};
     if (!isSetupComplete()) {
-      return { ok: false, error: 'Setup not complete. Complete first-time authentication via /setup/browser', state: STATES.FAILED };
+      return {
+        ok: false,
+        error: 'Setup not complete. Open /setup and tap Sign in with ChatGPT.',
+        state: STATES.FAILED,
+      };
     }
     if (this.bm.isLocked() || (this.current && [STATES.IDLE, STATES.COMPLETE, STATES.FAILED, STATES.NEEDS_REVIEW, STATES.REAUTH_REQUIRED].indexOf(this.current.state) === -1)) {
-      return { ok: false, error: 'Another run is in progress', state: this.current ? this.current.state : 'LOCKED' };
+      return {
+        ok: false,
+        error: 'Another run is in progress',
+        state: this.current ? this.current.state : 'LOCKED',
+        status: 'running',
+      };
     }
-    const runId = uuidv4();
-    const prompt = config.ermiPrompt;
+
+    const promptMeta = resolvePrompt(opts.promptId);
+    const prompt = promptMeta.body;
     const promptHash = hashPrompt(prompt);
+    const runId = uuidv4();
+
     if (!this.bm.acquireLock(runId)) {
-      return { ok: false, error: 'Could not acquire execution lock', state: 'LOCKED' };
+      return { ok: false, error: 'Could not acquire execution lock', state: 'LOCKED', status: 'error' };
     }
-    this.current = { id: runId, state: STATES.IDLE, history: [], error: null, startedAt: new Date().toISOString(), finishedAt: null, promptHash: promptHash, message: null };
+
+    // Count only successfully accepted jobs
+    const runNumber = incrementRunCounter();
+
+    this.current = {
+      id: runId,
+      state: STATES.IDLE,
+      history: [],
+      error: null,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      promptHash,
+      promptId: promptMeta.id,
+      promptLabel: promptMeta.label,
+      runNumber,
+      message: null,
+    };
     saveRunState(this.current);
+
     const self = this;
-    this._execute(runId, prompt, promptHash).catch(function(err) {
+    this._execute(runId, prompt, promptHash, promptMeta).catch(function (err) {
       self.log.error('Unhandled run error: ' + (err && err.stack));
       if (self.current && self.current.id === runId) {
         self._transition(STATES.FAILED, { error: err.message });
@@ -58,9 +117,22 @@ class RunExecutor {
       }
       self.bm.releaseLock(runId);
     });
-    return { ok: true, runId: runId, state: STATES.BROWSER_STARTING, label: HUMAN_LABELS[STATES.BROWSER_STARTING], promptHash: promptHash };
+
+    return {
+      ok: true,
+      status: 'queued',
+      runId,
+      state: STATES.BROWSER_STARTING,
+      label: HUMAN_LABELS[STATES.BROWSER_STARTING],
+      promptId: promptMeta.id,
+      promptLabel: promptMeta.label,
+      runNumber,
+      promptHash,
+      message: 'Run accepted and executing',
+    };
   }
-  async _execute(runId, prompt, promptHash) {
+
+  async _execute(runId, prompt, promptHash, promptMeta) {
     try {
       this._transition(STATES.BROWSER_STARTING);
       const launched = await this.bm.ensureBrowser({ headless: config.headless });
@@ -69,12 +141,16 @@ class RunExecutor {
 
       this._transition(STATES.CHATGPT_LOADING);
       await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(function() {});
+      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(function () {});
 
       this._transition(STATES.CHATGPT_READY);
       const pageState = await adapter.detectPageState();
       if (pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') {
-        this._transition(STATES.REAUTH_REQUIRED, { error: 'ChatGPT session needs re-authentication.', message: 'ChatGPT session needs re-authentication.' });
+        this._transition(STATES.REAUTH_REQUIRED, {
+          error: 'ChatGPT session needs re-authentication.',
+          message: 'ChatGPT session expired. Open /setup and sign in again.',
+          status: 'error',
+        });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
@@ -95,6 +171,7 @@ class RunExecutor {
       const verified = await adapter.verifyPromptExact(prompt);
       if (!verified) this.log.warn('Prompt verification soft-fail');
 
+      // Optional model/tool affordances — never fail the run if unavailable
       this._transition(STATES.PLUS_MENU_OPEN);
       const plusOpened = await adapter.openPlusMenu();
       if (plusOpened) await adapter.selectPluginsIfAvailable();
@@ -105,14 +182,22 @@ class RunExecutor {
 
       this._transition(STATES.READY_TO_SEND);
       if (!(await adapter.isAuthenticated())) {
-        this._transition(STATES.REAUTH_REQUIRED, { error: 'ChatGPT session needs re-authentication.', message: 'ChatGPT session needs re-authentication.' });
+        this._transition(STATES.REAUTH_REQUIRED, {
+          error: 'ChatGPT session needs re-authentication.',
+          message: 'ChatGPT session expired before send.',
+          status: 'error',
+        });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
         return;
       }
       if (!(await adapter.verifyPromptExact(prompt))) {
-        this._transition(STATES.NEEDS_REVIEW, { error: 'Composer content changed before send; refusing to send', message: 'NEEDS_REVIEW – prompt mismatch before send' });
+        this._transition(STATES.NEEDS_REVIEW, {
+          error: 'Composer content changed before send; refusing to send',
+          message: 'NEEDS_REVIEW – prompt mismatch before send',
+          status: 'error',
+        });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
@@ -126,22 +211,39 @@ class RunExecutor {
       this._transition(STATES.MESSAGE_VERIFIED);
       const appeared = await adapter.verifyUserMessageAppeared(prompt, 25000);
       if (!appeared) {
-        this._transition(STATES.NEEDS_REVIEW, { error: 'Could not verify user message after send', message: 'NEEDS_REVIEW – submission ambiguous, not resent' });
+        this._transition(STATES.NEEDS_REVIEW, {
+          error: 'Could not verify user message after send',
+          message: 'NEEDS_REVIEW – submission ambiguous, not resent',
+          status: 'error',
+        });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
         return;
       }
 
-      this._transition(STATES.COMPLETE, { message: 'ERMI Worker Agent prompt submitted and verified successfully' });
+      const receipt =
+        'ERMI ' +
+        promptMeta.label +
+        ' prompt submitted and verified (run #' +
+        (this.current.runNumber || '?') +
+        ')';
+      this._transition(STATES.COMPLETE, {
+        message: receipt,
+        status: 'completed',
+      });
       this.current.finishedAt = new Date().toISOString();
       saveRunState(this.current);
       this.bm.releaseLock(runId);
-      this.log.info('Run ' + runId + ' COMPLETE');
+      this.log.info('Run ' + runId + ' COMPLETE – ' + promptMeta.id);
     } catch (err) {
       this.log.error('Run ' + runId + ' failed: ' + err.message);
       if (this.current && this.current.id === runId) {
-        this._transition(STATES.FAILED, { error: err.message, message: err.message });
+        this._transition(STATES.FAILED, {
+          error: err.message,
+          message: err.message,
+          status: 'error',
+        });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
       }
@@ -149,6 +251,7 @@ class RunExecutor {
     }
   }
 }
+
 let executor = null;
 function getRunExecutor(logger) {
   if (!executor) executor = new RunExecutor(logger);
