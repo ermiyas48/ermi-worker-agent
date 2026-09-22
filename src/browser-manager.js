@@ -49,6 +49,7 @@ class BrowserManager {
   }
   async _launch(opts) {
     opts = opts || {};
+    // Always headless on servers; interactive setup uses screenshots + actions
     const headless = opts.headless !== undefined ? opts.headless : config.headless;
     const profileDir = config.profilePath;
     fs.mkdirSync(profileDir, { recursive: true });
@@ -56,7 +57,7 @@ class BrowserManager {
     this.context = await chromium.launchPersistentContext(profileDir, {
       headless: headless,
       args: [
-        '--disable-blink-features=AutomationControlled',
+        '--disable-blink_features=AutomationControlled',
         '--no-first-run', '--no-default-browser-check',
         '--disable-dev-shm-usage', '--disable-gpu',
         '--no-sandbox', '--disable-setuid-sandbox',
@@ -64,6 +65,7 @@ class BrowserManager {
       viewport: { width: 1280, height: 900 },
       ignoreDefaultArgs: ['--enable-automation'],
       acceptDownloads: false,
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
     });
     const pages = this.context.pages();
     this.page = pages.length > 0 ? pages[0] : await this.context.newPage();
@@ -74,9 +76,12 @@ class BrowserManager {
         url.includes('oaistatic.com') || url.includes('notion.com') ||
         url.includes('notion.so') || url.includes('googleapis.com') ||
         url.includes('gstatic.com') || url.includes('cloudflare') ||
+        url.includes('google.com') || url.includes('accounts.google') ||
+        url.includes('gvt1.com') || url.includes('mecrosoft.com') ||
+        url.includes('live.com') || url.includes('apple.com') ||
         url.startsWith('data:') || url.startsWith('blob:')
       ) return route.continue();
-      if (url.includes('doubleclick') || url.includes('google-analytics') || url.includes('facebook'))
+      if (url.includes('doubleclick') || url.includes('google-analytics') || url.includes('facebook') || url.includes('adservice'))
         return route.abort();
       return route.continue();
     });
@@ -87,6 +92,16 @@ class BrowserManager {
   async getPage() {
     const result = await this.ensureBrowser();
     return result.page;
+  }
+  async screenshot(opts) {
+    opts = opts || {};
+    const page = await this.getPage();
+    const buf = await page.screenshot({
+      type: 'jpeg',
+      quality: opts.quality || 70,
+      fullPage: !!opts.fullPage,
+    });
+    return buf;
   }
   async _safeClose() {
     try {
@@ -103,7 +118,8 @@ class BrowserManager {
     this.lock = false; this.lockOwner = null;
   }
   async launchForSetup() {
-    return this.ensureBrowser({ headless: false });
+    // Keep headless on Railway; interaction is via screenshot + remote actions
+    return this.ensureBrowser({ headless: config.headless });
   }
 }
 let instance = null;
