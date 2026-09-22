@@ -58,10 +58,6 @@ class RunExecutor {
     this.log.info('STATE ' + from + ' → ' + to);
   }
 
-  /**
-   * Accept a run into the queue. Increments persistent counter only when accepted.
-   * Prevents concurrent Chromium runs with real lock.
-   */
   async startRun(opts) {
     opts = opts || {};
     if (!isSetupComplete()) {
@@ -89,7 +85,6 @@ class RunExecutor {
       return { ok: false, error: 'Could not acquire execution lock', state: 'LOCKED', status: 'error' };
     }
 
-    // Count only successfully accepted jobs
     const runNumber = incrementRunCounter();
 
     this.current = {
@@ -140,15 +135,22 @@ class RunExecutor {
       const adapter = new ChatGPTAdapter(page, this.log);
 
       this._transition(STATES.CHATGPT_LOADING);
-      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(function () {});
+      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(1500);
+      try {
+        const cfWait = await this.bm.waitOutCloudflare(page, { timeout: 40000, autoClick: true });
+        if (!cfWait.cleared) this.log.warn('Cloudflare may still be present after wait');
+      } catch (e) {
+        this.log.warn('CF wait: ' + e.message);
+      }
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(function () {});
 
       this._transition(STATES.CHATGPT_READY);
       const pageState = await adapter.detectPageState();
-      if (pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') {
+      if (pageState === 'CLOUDFLARE' || pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') {
         this._transition(STATES.REAUTH_REQUIRED, {
-          error: 'ChatGPT session needs re-authentication.',
-          message: 'ChatGPT session expired. Open /setup and sign in again.',
+          error: pageState === 'CLOUDFLARE' ? 'Cloudflare challenge blocked ChatGPT' : 'ChatGPT session needs re-authentication.',
+          message: pageState === 'CLOUDFLARE' ? 'Cloudflare challenge blocked the browser. Open /setup, complete verification, then retry.' : 'ChatGPT session expired. Open /setup and sign in again.',
           status: 'error',
         });
         this.current.finishedAt = new Date().toISOString();
@@ -171,7 +173,6 @@ class RunExecutor {
       const verified = await adapter.verifyPromptExact(prompt);
       if (!verified) this.log.warn('Prompt verification soft-fail');
 
-      // Optional model/tool affordances — never fail the run if unavailable
       this._transition(STATES.PLUS_MENU_OPEN);
       const plusOpened = await adapter.openPlusMenu();
       if (plusOpened) await adapter.selectPluginsIfAvailable();
