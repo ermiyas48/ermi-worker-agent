@@ -33,7 +33,7 @@ button#start:hover:not(:disabled){background:#333}button#start:disabled{backgrou
   <input type="password" id="token" placeholder="Owner token" autocomplete="off"/>
   <button id="saveToken">Save</button>
 </div>
-<p class="hint">Owner token authorizes the run request only. ChatGPT session lives solely in the server Chromium profile.</p>
+<p class="hint">Trigger: GET /run?token=…&prompt=worker|discovery. ChatGPT session lives only in the server Chromium profile.</p>
 <script>
 const statusEl=document.getElementById("status"),detailEl=document.getElementById("detail"),startBtn=document.getElementById("start"),tokenInput=document.getElementById("token");
 tokenInput.value=localStorage.getItem("ermiOwnerToken")||"";
@@ -47,7 +47,7 @@ if(["COMPLETE","FAILED","NEEDS_REVIEW","REAUTH_REQUIRED","IDLE"].indexOf(j.state
 else startBtn.disabled=true;}catch(e){setStatus("Unreachable","failed",e.message);}}
 startBtn.onclick=async function(){const t=token();if(!t){setStatus("Token required","failed","Enter and save owner token");return;}
 startBtn.disabled=true;setStatus("Starting…","running","");
-try{const r=await fetch("/run",{method:"POST",headers:{"Authorization":"Bearer "+t,"Content-Type":"application/json"}});
+try{const r=await fetch("/run?token="+encodeURIComponent(t),{method:"GET",headers:{"Authorization":"Bearer "+t}});
 const j=await r.json();if(!r.ok){setStatus(j.state||"Error","failed",j.error||JSON.stringify(j));startBtn.disabled=false;return;}
 setStatus(j.label||"Running","running","Run ID: "+(j.runId||"").slice(0,8));
 if(!pollTimer)pollTimer=setInterval(poll,1500);}catch(e){setStatus("Request failed","failed",e.message);startBtn.disabled=false;}};
