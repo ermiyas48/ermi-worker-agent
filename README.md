@@ -1,67 +1,77 @@
-# ERMI Worker Agent – Server-Hosted Chromium Controller
+# ERMI Worker Agent
 
-Production web app that remotely controls a **persistent server-side Chromium** browser to start an ERMI Worker Agent run in ChatGPT.
+Server-hosted Chromium controller for ERMI Worker / Discovery runs in ChatGPT.
 
-**Not** a browser extension, userscript, phone automation, or OpenAI API integration.
+## Architecture
 
-## Flow
-
-```
-OPEN WEBSITE → SERVER WAKES → SERVER CHROMIUM → EXISTING CHATGPT SESSION
-→ NEW CHAT → PROMPT INSERTED → PLUGINS/THINKING VERIFIED → SEND ONCE
-→ SUBMISSION VERIFIED → DONE
-```
-
-## State machine
-
-```
-BROWSER_STARTING → CHATGPT_LOADING → CHATGPT_READY → AUTHENTICATED
-→ NEW_CHAT_READY → COMPOSER_READY → PROMPT_INSERTED → PLUS_MENU_OPEN
-→ PLUGIN_STATE_CONFIRMED → THINKING_STATE_CONFIRMED → READY_TO_SEND
-→ MESSAGE_SENT → MESSAGE_VERIFIED → COMPLETE
-```
-
-Safety exits: `FAILED`, `NEEDS_REVIEW`, `REAUTH_REQUIRED`
-
-## Endpoints
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/health` | none | Liveness |
-| GET | `/status` | none | Public run state |
-| POST | `/run` | Bearer token | Start ERMI run (202) |
-| GET | `/run/status` | Bearer token | Detailed status |
-| POST | `/setup/browser` | Bearer token | First-time browser launch |
-| GET | `/setup/status` | Bearer token | Auth detection |
-| GET | `/setup` | token in query | Temporary setup page |
-
-## Security
-
-- Strong `OWNER_TOKEN` required for control endpoints.
-- Profile only on persistent volume; never in app DB.
-- No passwords, OTPs, cookies, or conversation storage.
-- Setup route disabled after `setupComplete=true`.
-- One execution lock; never resend on ambiguous result.
-
-## Railway
-
-Volume at `/data`. Env: `OWNER_TOKEN`, `PROFILE_PATH=/data/profiles/chatgpt`, `DATA_PATH=/data/state`, `HEADLESS=true`.
+- Railway + Playwright Chromium + persistent profile at `/data/profiles/chatgpt`
+- State and run counter on `/data/state`
+- No OpenAI API keys, no password storage outside the Chromium profile
 
 ## First-time setup
 
-1. Set `OWNER_TOKEN` in Railway variables.
-2. Open `https://<your-app>/setup?token=<OWNER_TOKEN>`.
-3. Click **Start browser** and complete ChatGPT login in the server browser session (visible via Railway logs / remote display if configured).
-4. When auth is detected, setup marks complete and `/setup` disables.
-5. Use the white frontend **Start ERMI Worker** button (or `POST /run` with Bearer token).
+1. Open `https://<your-host>/setup?token=<OWNER_TOKEN>`
+2. Tap **Sign in with ChatGPT**
+3. Complete normal ChatGPT login/MFA in the live view
+4. Authenticated state is detected automatically → setup complete
 
-## Local development
+Profile persists across restarts. If the session later expires, runs return `REAUTH_REQUIRED` and you re-open `/setup`.
+
+## Trigger a run
+
+```
+GET /run?token=<OWNER_TOKEN>
+GET /run?token=<OWNER_TOKEN>&prompt=worker
+GET /run?token=<OWNER_TOKEN>&prompt=discovery
+```
+
+Also accepts `Authorization: Bearer <OWNER_TOKEN>` and `POST /run`.
+
+Response (202):
+
+```json
+{
+  "ok": true,
+  "status": "queued",
+  "runId": "...",
+  "promptId": "worker",
+  "runNumber": 1,
+  "message": "Run accepted and executing"
+}
+```
+
+### Prompt sequence (persistent)
+
+Accepted runs only:
+
+1. worker  
+2. worker  
+3. worker  
+4. discovery  
+5. worker  
+…  
+
+Counter lives in `/data/state/run-counter.json` and survives Railway restarts.
+
+## Status
+
+- `GET /health` — uptime, setupComplete, runCounter  
+- `GET /status` — current run state  
+
+## Env
+
+| Variable | Purpose |
+|----------|---------|
+| `OWNER_TOKEN` | Shared secret for /run and setup (min 16 chars) |
+| `PROFILE_PATH` | Chromium profile dir (default `/data/profiles/chatgpt`) |
+| `DATA_PATH` | State dir (default `/data/state`) |
+| `HEADLESS` | `true` on Railway |
+| `PORT` | `3000` |
+
+## Local
 
 ```bash
 npm install
-export OWNER_TOKEN=dev-secret-at-least-16-chars
-export PROFILE_PATH=./data/profiles/chatgpt
-export DATA_PATH=./data/state
-export HEADLESS=false
-node src/server.js
+npx playwright install chromium
+OWNER_TOKEN=your-long-secret npm start
 ```
