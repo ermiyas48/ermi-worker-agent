@@ -44,7 +44,7 @@ class SetupController {
       this.lastChallenge = cf;
       if (cf.challenge) {
         this.log.info('Cloudflare challenge detected at setup start');
-        await this.bm.waitOutCloudflare(page, { timeout: 50000, autoClick: true });
+        await this.bm.waitOutCloudflare(page, { timeout: 90000, autoClick: true });
         await page.waitForTimeout(1500);
       }
 
@@ -192,13 +192,13 @@ class SetupController {
         await page.waitForTimeout(1500);
         const cf = await this.bm.detectCloudflareChallenge(page);
         this.lastChallenge = cf;
-        if (cf.challenge) await this.bm.waitOutCloudflare(page, { timeout: 40000, autoClick: true });
+        if (cf.challenge) await this.bm.waitOutCloudflare(page, { timeout: 60000, autoClick: true });
       } else if (type === 'scroll') {
         await page.mouse.wheel(0, Number(action.dy) || 300);
       } else if (type === 'cf-click') {
         const clicked = await this.bm.tryClickTurnstile(page);
         await page.waitForTimeout(2000);
-        const wait = await this.bm.waitOutCloudflare(page, { timeout: 25000, autoClick: true });
+        const wait = await this.bm.waitOutCloudflare(page, { timeout: 40000, autoClick: true });
         this.lastChallenge = await this.bm.detectCloudflareChallenge(page);
         return {
           ok: true,
@@ -222,19 +222,34 @@ class SetupController {
     if (isSetupComplete()) {
       return { ok: false, error: 'Setup already complete' };
     }
+    this.setupInProgress = true;
     try {
       const result = await this.bm.importCookies(cookies);
       const page = await this.bm.getPage();
-      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(2500);
-      const cf = await this.bm.detectCloudflareChallenge(page);
+      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+      await page.waitForTimeout(3000);
+      let cf = await this.bm.detectCloudflareChallenge(page);
       this.lastChallenge = cf;
       if (cf.challenge) {
-        await this.bm.waitOutCloudflare(page, { timeout: 35000, autoClick: true });
+        await this.bm.waitOutCloudflare(page, { timeout: 90000, autoClick: true });
+        await page.waitForTimeout(2000);
+        cf = await this.bm.detectCloudflareChallenge(page);
+        this.lastChallenge = cf;
+      }
+      if (cf.challenge) {
+        this.log.info('Still challenged – second navigation attempt');
+        await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await this.bm.waitOutCloudflare(page, { timeout: 60000, autoClick: true });
+        cf = await this.bm.detectCloudflareChallenge(page);
+        this.lastChallenge = cf;
       }
       this.lastUrl = page.url();
       const adapter = new ChatGPTAdapter(page, this.log);
-      const authed = await adapter.isAuthenticated();
+      let authed = await adapter.isAuthenticated();
+      if (!authed && !cf.challenge) {
+        await page.waitForTimeout(4000);
+        authed = await adapter.isAuthenticated();
+      }
       this.lastAuthCheck = { at: new Date().toISOString(), authenticated: authed, url: this.lastUrl };
       if (authed) {
         markSetupComplete();
@@ -252,16 +267,20 @@ class SetupController {
           url: this.lastUrl,
         };
       }
+      this._startAutoDetect();
       return {
         ok: true,
         authenticated: false,
         setupComplete: false,
         cookiesImported: result.count,
         cloudflare: !!(this.lastChallenge && this.lastChallenge.challenge),
-        message: 'Cookies imported (' + result.count + '). Not fully authenticated yet — finish in live view or re-export while logged in at home.',
+        message: cf.challenge
+          ? 'Cookies imported but Cloudflare still blocking Railway IP. Add PROXY_SERVER (residential) on Railway, or complete live sign-in.'
+          : 'Cookies imported (' + result.count + '). Not authenticated yet — session may be incomplete/expired.',
         url: this.lastUrl,
       };
     } catch (e) {
+      this.setupInProgress = false;
       return { ok: false, error: e.message };
     }
   }
