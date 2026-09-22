@@ -2,12 +2,11 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const { config, isSetupComplete, getRunCounter } = require('./config');
-const { createLogger } = require('./logger');
+const log = require('./logger');
 const { getBrowserManager } = require('./browser-manager');
 const { getSetupController } = require('./setup-controller');
 const { getRunExecutor } = require('./run-executor');
 
-const log = createLogger('server');
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '2mb' }));
