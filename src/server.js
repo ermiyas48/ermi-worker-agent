@@ -20,7 +20,7 @@ app.use(cors({ origin: false }));
 app.use(express.json({ limit: '32kb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-const controlLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
+const controlLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
 
 function requireOwner(req, res, next) {
   const header = req.headers.authorization || '';
@@ -67,11 +67,29 @@ app.post('/setup/browser', controlLimiter, requireOwner, async (req, res) => {
 });
 
 app.get('/setup/status', controlLimiter, requireOwner, async (req, res) => {
-  if (req.query.detect === '1' && !isSetupComplete()) {
+  if (req.query.detect === '1' && ! isSetupComplete()) {
     const det = await setup.detectAuthentication();
     return res.json(Object.assign({}, setup.getStatus(), det));
   }
   res.json(setup.getStatus());
+});
+
+app.get('/setup/screenshot', controlLimiter, requireOwner, async (req, res) => {
+  if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete' });
+  try {
+    const buf = await setup.getScreenshot();
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(buf);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/setup/action', controlLimiter, requireOwner, async (req, res) => {
+  if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete' });
+  const result = await setup.performAction(req.body || {});
+  res.status(result.ok ? 200 : 400).json(result);
 });
 
 app.get('/setup', (req, res) => {
