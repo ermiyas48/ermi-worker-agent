@@ -43,7 +43,7 @@ class SetupController {
       const cf = await this.bm.detectCloudflareChallenge(page);
       this.lastChallenge = cf;
       if (cf.challenge) {
-        this.log.info('Cloudflare challenge detected at setup start — waiting / clicking');
+        this.log.info('Cloudflare challenge detected at setup start');
         await this.bm.waitOutCloudflare(page, { timeout: 50000, autoClick: true });
         await page.waitForTimeout(1500);
       }
@@ -54,8 +54,8 @@ class SetupController {
       return {
         ok: true,
         message: cf.challenge
-          ? 'Browser started. If you see “Verify you are human”, tap the checkbox once and wait a few seconds — do not spam clicks. Auth is detected automatically after ChatGPT loads.'
-          : 'Sign in with ChatGPT in the live view below (email, Google, or phone + MFA). Authentication is detected automatically.',
+          ? 'Browser started. Prefer Import cookies from home if Cloudflare loops. Or tap Verify once and wait.'
+          : 'Sign in with ChatGPT in the live view, or use Import cookies from your home browser.',
         url: this.lastUrl,
         cloudflare: !!cf.challenge,
       };
@@ -94,7 +94,7 @@ class SetupController {
           setupComplete: false,
           cloudflare: true,
           message:
-            'Cloudflare is checking this browser. Tap the “Verify you are human” box once in the live view, then wait 5–10 seconds. Avoid rapid re-clicks — that can reset the challenge.',
+            'Cloudflare is checking this browser. Prefer Import cookies from home. If trying live: tap once, wait 10s.',
           url: this.lastUrl,
         };
       }
@@ -135,7 +135,7 @@ class SetupController {
         authenticated: false,
         setupComplete: false,
         cloudflare: false,
-        message: 'Not yet authenticated. Complete ChatGPT sign-in in the live view (including MFA if prompted).',
+        message: 'Not yet authenticated. Complete ChatGPT sign-in or import cookies from home.',
         url: this.lastUrl,
       };
     } catch (e) {
@@ -176,9 +176,7 @@ class SetupController {
         await page.waitForTimeout(500);
         const cf = await this.bm.detectCloudflareChallenge(page);
         this.lastChallenge = cf;
-        if (cf.challenge) {
-          await page.waitForTimeout(2000);
-        }
+        if (cf.challenge) await page.waitForTimeout(2000);
       } else if (type === 'type') {
         const text = String(action.text || '');
         if (action.clear) {
@@ -187,20 +185,16 @@ class SetupController {
         }
         await page.keyboard.type(text, { delay: 35 + Math.floor(Math.random() * 40) });
       } else if (type === 'press') {
-        const key = String(action.key || 'Enter');
-        await page.keyboard.press(key);
+        await page.keyboard.press(String(action.key || 'Enter'));
       } else if (type === 'goto') {
         const url = String(action.url || config.chatgptUrl);
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(1500);
         const cf = await this.bm.detectCloudflareChallenge(page);
         this.lastChallenge = cf;
-        if (cf.challenge) {
-          await this.bm.waitOutCloudflare(page, { timeout: 40000, autoClick: true });
-        }
+        if (cf.challenge) await this.bm.waitOutCloudflare(page, { timeout: 40000, autoClick: true });
       } else if (type === 'scroll') {
-        const dy = Number(action.dy) || 300;
-        await page.mouse.wheel(0, dy);
+        await page.mouse.wheel(0, Number(action.dy) || 300);
       } else if (type === 'cf-click') {
         const clicked = await this.bm.tryClickTurnstile(page);
         await page.waitForTimeout(2000);
@@ -214,11 +208,59 @@ class SetupController {
           url: page.url(),
         };
       } else {
-        return { ok: false, error: 'Unknown action type. Use click|type|press|goto|scroll|cf-click' };
+        return { ok: false, error: 'Unknown action type' };
       }
       this.lastUrl = page.url();
       await page.waitForTimeout(300);
       return { ok: true, url: this.lastUrl, cloudflare: !!(this.lastChallenge && this.lastChallenge.challenge) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  async importSessionCookies(cookies) {
+    if (isSetupComplete()) {
+      return { ok: false, error: 'Setup already complete' };
+    }
+    try {
+      const result = await this.bm.importCookies(cookies);
+      const page = await this.bm.getPage();
+      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(2500);
+      const cf = await this.bm.detectCloudflareChallenge(page);
+      this.lastChallenge = cf;
+      if (cf.challenge) {
+        await this.bm.waitOutCloudflare(page, { timeout: 35000, autoClick: true });
+      }
+      this.lastUrl = page.url();
+      const adapter = new ChatGPTAdapter(page, this.log);
+      const authed = await adapter.isAuthenticated();
+      this.lastAuthCheck = { at: new Date().toISOString(), authenticated: authed, url: this.lastUrl };
+      if (authed) {
+        markSetupComplete();
+        this.setupInProgress = false;
+        if (this.autoDetectTimer) {
+          clearInterval(this.autoDetectTimer);
+          this.autoDetectTimer = null;
+        }
+        return {
+          ok: true,
+          authenticated: true,
+          setupComplete: true,
+          cookiesImported: result.count,
+          message: 'Cookies imported and ChatGPT session is active. Setup complete.',
+          url: this.lastUrl,
+        };
+      }
+      return {
+        ok: true,
+        authenticated: false,
+        setupComplete: false,
+        cookiesImported: result.count,
+        cloudflare: !!(this.lastChallenge && this.lastChallenge.challenge),
+        message: 'Cookies imported (' + result.count + '). Not fully authenticated yet — finish in live view or re-export while logged in at home.',
+        url: this.lastUrl,
+      };
     } catch (e) {
       return { ok: false, error: e.message };
     }
