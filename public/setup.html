@@ -19,19 +19,25 @@ h1{font-size:1.15rem;font-weight:600}
 .viewport{position:relative;background:#000;border-radius:10px;overflow:hidden;touch-action:manipulation;user-select:none;min-height:200px}
 .viewport img{display:block;width:100%;height:auto;cursor:crosshair}
 .toolbar{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem;align-items:center}
-button,.btn{background:#3b82f6;color:#fff;border:none;padding:.6rem 1.15rem;border-radius:8px;font-size:.95rem;cursor:pointer;font-weight:600}
+button{background:#3b82f6;color:#fff;border:none;padding:.6rem 1.15rem;border-radius:8px;font-size:.95rem;cursor:pointer;font-weight:600}
 button.secondary{background:#2a2d35;color:#e8eaed;border:1px solid #3f4450;font-weight:500}
 button.warn{background:#b45309;color:#fff}
+button.green{background:#059669;color:#fff}
 button:disabled{opacity:.5;cursor:not-allowed}
 button.primary-lg{font-size:1.05rem;padding:.75rem 1.5rem;width:100%;max-width:320px}
-input[type=text],input[type=password]{flex:1;min-width:140px;padding:.55rem .75rem;border-radius:8px;border:1px solid #3f4450;background:#0f1115;color:#e8eaed;font-size:.95rem}
+input[type=text],textarea{flex:1;min-width:140px;padding:.55rem .75rem;border-radius:8px;border:1px solid #3f4450;background:#0f1115;color:#e8eaed;font-size:.95rem}
+textarea{width:100%;min-height:120px;font-family:ui-monospace,monospace;font-size:.8rem;resize:vertical;margin-top:.75rem}
 .note{font-size:.85rem;color:#9ca3af;margin-top:.75rem;line-height:1.5}
 .alert{font-size:.9rem;line-height:1.45;padding:.75rem 1rem;border-radius:8px;margin-top:.75rem}
 .alert.cf{background:#172554;border:1px solid #1d4ed8;color:#bfdbfe}
+.alert.tip{background:#14532d;border:1px solid #166534;color:#bbf7d0}
 .url{font-size:.75rem;color:#6b7280;word-break:break-all;margin-top:.5rem}
 .hero{text-align:center;padding:1.5rem 0 .5rem}
 .hero p{color:#c5c9d0;font-size:.95rem;margin:.75rem auto 1.25rem;max-width:28rem;line-height:1.5}
 .hidden{display:none!important}
+ol.steps{margin:.5rem 0 0 1.2rem;color:#c5c9d0;font-size:.9rem;line-height:1.55}
+ol.steps li{margin:.35rem 0}
+code{background:#0f1115;padding:.1rem .35rem;border-radius:4px;font-size:.85em}
 </style>
 </head>
 <body>
@@ -41,20 +47,36 @@ input[type=text],input[type=password]{flex:1;min-width:140px;padding:.55rem .75r
 </header>
 <div class="wrap">
   <div class="card hero" id="heroCard">
-    <p>One step: sign in to ChatGPT on the server browser. Your session is saved on the persistent volume — no passwords stored outside the Chromium profile.</p>
-    <button id="btnSignIn" class="primary-lg">Sign in with ChatGPT</button>
+    <p>Railway’s server IP often triggers Cloudflare. Best path: sign in at home, export cookies, paste them here.</p>
+    <button id="btnSignIn" class="primary-lg">Try live browser sign-in</button>
     <div id="detail" class="note"></div>
+  </div>
+
+  <div class="card" id="importCard">
+    <strong>Recommended: import session from your home browser</strong>
+    <div class="alert tip">
+      Log into chatgpt.com on your phone/PC at home (normal Wi‑Fi). Then export cookies and paste below. This skips the Cloudflare loop on Railway.
+    </div>
+    <ol class="steps">
+      <li>On your home device, open <code>https://chatgpt.com</code> and finish login.</li>
+      <li>Install free <b>Cookie-Editor</b> (Chrome/Firefox/Edge), or use DevTools → Application → Cookies.</li>
+      <li>Export cookies for <code>chatgpt.com</code> and <code>openai.com</code> as JSON.</li>
+      <li>Paste the JSON array below and tap <b>Import cookies</b>.</li>
+    </ol>
+    <textarea id="cookieJson" placeholder='[{"name":"__Secure-next-auth.session-token","value":"...","domain":".chatgpt.com","path":"/","secure":true,"httpOnly":true,"sameSite":"Lax"}]'></textarea>
+    <div class="toolbar" style="margin-top:.75rem">
+      <button id="btnImport" class="green">Import cookies</button>
+    </div>
+    <p class="note">Only paste cookies from your own logged-in session. They stay on the Railway volume profile.</p>
   </div>
 
   <div class="card hidden" id="liveCard">
     <div id="cfBanner" class="alert cf hidden">
       <strong>Cloudflare check</strong><br/>
-      Tap the “Verify you are human” box <em>once</em>, then wait 5–10 seconds. Rapid re-taps reset the challenge.
-      You can also press <b>Help verification</b> below for a careful auto-click.
+      Rapid taps reset the challenge on server IPs. Prefer <b>Import cookies</b> above.
+      If you still try here: tap once, wait 10s, or press Help verification once.
     </div>
-    <div class="viewport" id="viewport">
-      <img id="shot" alt="Live browser – tap to click"/>
-    </div>
+    <div class="viewport"><img id="shot" alt="Live browser"/></div>
     <div class="toolbar">
       <input type="text" id="typeInput" placeholder="Type email, code, password…" autocomplete="off"/>
       <button id="btnType">Type</button>
@@ -67,13 +89,12 @@ input[type=text],input[type=password]{flex:1;min-width:140px;padding:.55rem .75r
       <button id="btnRefresh" class="secondary">Refresh</button>
       <button id="btnCf" class="warn">Help verification</button>
     </div>
-    <p class="note">Tap the screenshot to click. After Cloudflare clears, complete normal ChatGPT login. Auth is detected automatically.</p>
     <div id="url" class="url"></div>
   </div>
 
   <div class="card hidden" id="doneCard">
     <strong style="color:#6ee7b7">Setup complete</strong>
-    <p class="note">ChatGPT profile is saved. Future ERMI runs will reuse this session. You can close this page and use <code>GET /run</code>.</p>
+    <p class="note">ChatGPT profile is saved. Use <code>GET /run</code>.</p>
   </div>
 </div>
 <script>
@@ -82,7 +103,6 @@ if (token) localStorage.setItem("ownerToken", token);
 const headers = token
   ? { "Authorization": "Bearer " + token, "Content-Type": "application/json" }
   : { "Content-Type": "application/json" };
-
 const statusEl = document.getElementById("status");
 const detailEl = document.getElementById("detail");
 const urlEl = document.getElementById("url");
@@ -90,83 +110,47 @@ const shot = document.getElementById("shot");
 const heroCard = document.getElementById("heroCard");
 const liveCard = document.getElementById("liveCard");
 const doneCard = document.getElementById("doneCard");
+const importCard = document.getElementById("importCard");
 const cfBanner = document.getElementById("cfBanner");
-let pollShot = null;
-let pollAuth = null;
-let setupDone = false;
-
-function setStatus(text, cls) {
-  statusEl.textContent = text;
-  statusEl.className = "badge " + (cls || "wait");
-}
-
-function showLive() {
-  heroCard.classList.add("hidden");
-  liveCard.classList.remove("hidden");
-  doneCard.classList.add("hidden");
-}
-
+let pollShot = null, pollAuth = null, setupDone = false;
+function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = "badge " + (cls || "wait"); }
+function showLive() { heroCard.classList.add("hidden"); liveCard.classList.remove("hidden"); doneCard.classList.add("hidden"); }
 function showDone() {
-  setupDone = true;
-  setStatus("Setup complete", "ok");
-  heroCard.classList.add("hidden");
-  liveCard.classList.add("hidden");
+  setupDone = true; setStatus("Setup complete", "ok");
+  heroCard.classList.add("hidden"); liveCard.classList.add("hidden"); importCard.classList.add("hidden");
   doneCard.classList.remove("hidden");
-  if (pollShot) { clearInterval(pollShot); pollShot = null; }
-  if (pollAuth) { clearInterval(pollAuth); pollAuth = null; }
+  if (pollShot) clearInterval(pollShot); if (pollAuth) clearInterval(pollAuth);
 }
-
 function setCfVisible(on) {
-  if (on) {
-    cfBanner.classList.remove("hidden");
-    setStatus("Cloudflare check", "cf");
-  } else {
-    cfBanner.classList.add("hidden");
-  }
+  if (on) { cfBanner.classList.remove("hidden"); setStatus("Cloudflare check", "cf"); }
+  else cfBanner.classList.add("hidden");
 }
-
 async function refreshStatus() {
   try {
     const r = await fetch("/setup/status?detect=1", { headers });
     const j = await r.json();
-    if (j.setupComplete || j.authenticated) {
-      showDone();
-      detailEl.textContent = j.message || "Authenticated";
-      return true;
-    }
+    if (j.setupComplete || j.authenticated) { showDone(); detailEl.textContent = j.message || "Authenticated"; return true; }
     if (j.cloudflare || (j.lastChallenge && j.lastChallenge.challenge)) {
-      setCfVisible(true);
-      detailEl.textContent = j.message || "Waiting for human verification…";
+      setCfVisible(true); detailEl.textContent = j.message || "Waiting for verification…";
     } else {
-      setCfVisible(false);
-      setStatus("Waiting for sign-in", "wait");
+      setCfVisible(false); setStatus("Waiting for sign-in", "wait");
       if (j.message) detailEl.textContent = j.message;
     }
     if (j.lastUrl || j.url) urlEl.textContent = j.lastUrl || j.url;
     return false;
-  } catch (e) {
-    setStatus("Error", "err");
-    detailEl.textContent = e.message;
-    return false;
-  }
+  } catch (e) { setStatus("Error", "err"); detailEl.textContent = e.message; return false; }
 }
-
 async function loadShot() {
   if (setupDone) return;
   try {
     const r = await fetch("/setup/screenshot?t=" + Date.now(), { headers });
-    if (!r.ok) {
-      if (r.status === 403) { showDone(); return; }
-      return;
-    }
+    if (!r.ok) { if (r.status === 403) showDone(); return; }
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
-    const prev = shot.src;
-    shot.src = url;
+    const prev = shot.src; shot.src = url;
     if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
   } catch (_) {}
 }
-
 async function action(body) {
   const r = await fetch("/setup/action", { method: "POST", headers, body: JSON.stringify(body) });
   const j = await r.json();
@@ -176,7 +160,32 @@ async function action(body) {
   setTimeout(loadShot, 400);
   return j;
 }
-
+document.getElementById("btnImport").onclick = async () => {
+  const btn = document.getElementById("btnImport");
+  let raw = document.getElementById("cookieJson").value.trim();
+  if (!raw) { detailEl.textContent = "Paste a JSON cookie array first."; return; }
+  let cookies;
+  try {
+    cookies = JSON.parse(raw);
+    if (!Array.isArray(cookies) && cookies.cookies) cookies = cookies.cookies;
+    if (!Array.isArray(cookies)) throw new Error("Expected a JSON array of cookies");
+  } catch (e) { detailEl.textContent = "Invalid JSON: " + e.message; setStatus("Error", "err"); return; }
+  btn.disabled = true;
+  detailEl.textContent = "Importing cookies and checking ChatGPT…";
+  setStatus("Importing…", "wait");
+  try {
+    const r = await fetch("/setup/import-cookies", { method: "POST", headers, body: JSON.stringify({ cookies }) });
+    const j = await r.json();
+    if (j.setupComplete || j.authenticated) { showDone(); detailEl.textContent = j.message || "Session imported"; return; }
+    if (!j.ok) { detailEl.textContent = j.error || "Import failed"; setStatus("Error", "err"); btn.disabled = false; return; }
+    detailEl.textContent = j.message || "Imported — finish remaining steps if needed.";
+    if (j.url) urlEl.textContent = j.url;
+    showLive(); await loadShot();
+    if (!pollShot) pollShot = setInterval(loadShot, 2000);
+    if (!pollAuth) pollAuth = setInterval(async () => { await refreshStatus(); }, 3000);
+  } catch (e) { detailEl.textContent = e.message; setStatus("Error", "err"); }
+  btn.disabled = false;
+};
 document.getElementById("btnSignIn").onclick = async () => {
   const btn = document.getElementById("btnSignIn");
   btn.disabled = true;
@@ -185,61 +194,37 @@ document.getElementById("btnSignIn").onclick = async () => {
   try {
     const r = await fetch("/setup/start", { method: "POST", headers });
     const j = await r.json();
-    if (!j.ok) {
-      detailEl.textContent = j.error || "Failed to start browser";
-      setStatus("Error", "err");
-      btn.disabled = false;
-      return;
-    }
-    detailEl.textContent = j.message || "Browser ready — sign in below";
+    if (!j.ok) { detailEl.textContent = j.error || "Failed"; setStatus("Error", "err"); btn.disabled = false; return; }
+    detailEl.textContent = j.message || "Browser ready";
     if (j.url) urlEl.textContent = j.url;
     if (j.cloudflare) setCfVisible(true);
-    showLive();
-    await loadShot();
+    showLive(); await loadShot();
     if (!pollShot) pollShot = setInterval(loadShot, 2000);
-    if (!pollAuth) pollAuth = setInterval(async () => {
-      const done = await refreshStatus();
-      if (done) await loadShot();
-    }, 3000);
-  } catch (e) {
-    detailEl.textContent = e.message;
-    setStatus("Error", "err");
-    btn.disabled = false;
-  }
+    if (!pollAuth) pollAuth = setInterval(async () => { await refreshStatus(); }, 3000);
+  } catch (e) { detailEl.textContent = e.message; setStatus("Error", "err"); btn.disabled = false; }
 };
-
 document.getElementById("btnRefresh").onclick = () => loadShot();
 document.getElementById("btnCf").onclick = async () => {
-  detailEl.textContent = "Attempting careful verification click…";
+  detailEl.textContent = "Attempting careful verification…";
   const j = await action({ type: "cf-click" });
-  if (j.cleared) {
-    setCfVisible(false);
-    detailEl.textContent = "Challenge cleared — continue sign-in if needed.";
-    setStatus("Waiting for sign-in", "wait");
-  } else {
-    detailEl.textContent = "Still verifying. Tap the checkbox once in the view, wait 8 seconds, then try Help verification again.";
-  }
+  if (j.cleared) { setCfVisible(false); detailEl.textContent = "Challenge cleared."; setStatus("Waiting for sign-in", "wait"); }
+  else detailEl.textContent = "Still verifying. Prefer Import cookies from home.";
   await refreshStatus();
 };
-
 shot.onclick = (e) => {
   const rect = shot.getBoundingClientRect();
-  const scaleX = shot.naturalWidth / rect.width;
-  const scaleY = shot.naturalHeight / rect.height;
-  const x = Math.round((e.clientX - rect.left) * scaleX);
-  const y = Math.round((e.clientY - rect.top) * scaleY);
+  const x = Math.round((e.clientX - rect.left) * (shot.naturalWidth / rect.width));
+  const y = Math.round((e.clientY - rect.top) * (shot.naturalHeight / rect.height));
   action({ type: "click", x, y });
 };
 document.getElementById("btnType").onclick = () => {
   const text = document.getElementById("typeInput").value;
-  if (!text) return;
-  action({ type: "type", text });
+  if (text) action({ type: "type", text });
 };
 document.getElementById("btnEnter").onclick = () => action({ type: "press", key: "Enter" });
 document.getElementById("btnClear").onclick = () => action({ type: "type", text: "", clear: true });
 document.getElementById("btnScrollDown").onclick = () => action({ type: "scroll", dy: 400 });
 document.getElementById("btnScrollUp").onclick = () => action({ type: "scroll", dy: -400 });
-
 (async () => {
   try {
     const r = await fetch("/setup/status", { headers });
