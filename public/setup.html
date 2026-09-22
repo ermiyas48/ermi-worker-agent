@@ -3,53 +3,51 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>ERMI Setup</title>
+<title>ERMI – Sign in with ChatGPT</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,-apple-system,sans-serif;background:#0f1115;color:#e8eaed;min-height:100vh;padding:0 0 4rem}
 header{padding:1rem 1.25rem;border-bottom:1px solid #2a2d35;display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}
-h1{font-size:1.1rem;font-weight:600}
-.badge{font-size:.75rem;padding:.25rem .6rem;border-radius:999px;font-weight:600}
+h1{font-size:1.15rem;font-weight:600}
+.badge{font-size:.75rem;padding:.25rem .65rem;border-radius:999px;font-weight:600}
 .badge.wait{background:#3d2e00;color:#fbbf24}
 .badge.ok{background:#064e3b;color:#6ee7b7}
 .badge.err{background:#450a0a;color:#fca5a5}
 .wrap{max-width:960px;margin:0 auto;padding:1rem}
-.card{background:#1a1d24;border:1px solid #2a2d35;border-radius:12px;padding:1rem;margin-bottom:1rem}
-.viewport{position:relative;background:#000;border-radius:10px;overflow:hidden;touch-action:manipulation;user-select:none}
+.card{background:#1a1d24;border:1px solid #2a2d35;border-radius:12px;padding:1.1rem;margin-bottom:1rem}
+.viewport{position:relative;background:#000;border-radius:10px;overflow:hidden;touch-action:manipulation;user-select:none;min-height:200px}
 .viewport img{display:block;width:100%;height:auto;cursor:crosshair}
 .toolbar{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem;align-items:center}
-button,.btn{background:#3b82f6;color:#fff;border:none;padding:.55rem 1rem;border-radius:8px;font-size:.9rem;cursor:pointer;font-weight:500}
-button.secondary{background:#2a2d35;color:#e8eaed;border:1px solid #3f4450}
+button,.btn{background:#3b82f6;color:#fff;border:none;padding:.6rem 1.15rem;border-radius:8px;font-size:.95rem;cursor:pointer;font-weight:600}
+button.secondary{background:#2a2d35;color:#e8eaed;border:1px solid #3f4450;font-weight:500}
 button:disabled{opacity:.5;cursor:not-allowed}
+button.primary-lg{font-size:1.05rem;padding:.75rem 1.5rem;width:100%;max-width:320px}
 input[type=text],input[type=password]{flex:1;min-width:140px;padding:.55rem .75rem;border-radius:8px;border:1px solid #3f4450;background:#0f1115;color:#e8eaed;font-size:.95rem}
-.note{font-size:.8rem;color:#9ca3af;margin-top:.75rem;line-height:1.45}
+.note{font-size:.85rem;color:#9ca3af;margin-top:.75rem;line-height:1.5}
 .url{font-size:.75rem;color:#6b7280;word-break:break-all;margin-top:.5rem}
-ol{padding-left:1.25rem;margin-top:.5rem;font-size:.9rem;color:#c5c9d0}
-li{margin:.35rem 0}
+.hero{text-align:center;padding:1.5rem 0 .5rem}
+.hero p{color:#c5c9d0;font-size:.95rem;margin:.75rem auto 1.25rem;max-width:28rem;line-height:1.5}
+.hidden{display:none!important}
 </style>
 </head>
 <body>
 <header>
   <h1>ERMI – ChatGPT Setup</h1>
-  <span id="status" class="badge wait">Checking…</span>
+  <span id="status" class="badge wait">Ready</span>
 </header>
 <div class="wrap">
-  <div class="card">
-    <p style="font-size:.9rem;color:#c5c9d0">Server Chromium with persistent <code>/data</code> profile. Sign in here from your phone — no extension needed.</p>
-    <div class="toolbar">
-      <button id="btnStart">Start Browser</button>
-      <button id="btnCheck" class="secondary">Check Auth</button>
-      <button id="btnRefresh" class="secondary">Refresh View</button>
-    </div>
+  <div class="card hero" id="heroCard">
+    <p>One step: sign in to ChatGPT on the server browser. Your session is saved on the persistent volume — no passwords stored outside the Chromium profile.</p>
+    <button id="btnSignIn" class="primary-lg">Sign in with ChatGPT</button>
     <div id="detail" class="note"></div>
-    <div id="url" class="url"></div>
   </div>
-  <div class="card">
+
+  <div class="card hidden" id="liveCard">
     <div class="viewport" id="viewport">
-      <img id="shot" alt="Browser view – tap to click"/>
+      <img id="shot" alt="Live browser – tap to click"/>
     </div>
     <div class="toolbar">
-      <input type="text" id="typeInput" placeholder="Type text (email, code…)" autocomplete="off"/>
+      <input type="text" id="typeInput" placeholder="Type email, code, password…" autocomplete="off"/>
       <button id="btnType">Type</button>
       <button id="btnEnter" class="secondary">Enter</button>
       <button id="btnClear" class="secondary">Clear</button>
@@ -57,22 +55,19 @@ li{margin:.35rem 0}
     <div class="toolbar">
       <button id="btnScrollDown" class="secondary">Scroll ↓</button>
       <button id="btnScrollUp" class="secondary">Scroll ↑</button>
-      <button id="btnHome" class="secondary">Go chatgpt.com</button>
+      <button id="btnRefresh" class="secondary">Refresh</button>
     </div>
-    <p class="note">Tap the screenshot to click. Type codes/emails in the field, then Type. Polls every 2.5s while waiting for login.</p>
+    <p class="note">Tap the screenshot to click. Authentication is detected automatically when the ChatGPT home/composer appears.</p>
+    <div id="url" class="url"></div>
   </div>
-  <div class="card">
-    <strong>Steps</strong>
-    <ol>
-      <li>Tap <b>Start Browser</b>.</li>
-      <li>Sign in to ChatGPT in the live view (email magic link, Google, or password + MFA).</li>
-      <li>When ChatGPT home/composer is visible, tap <b>Check Auth</b>.</li>
-      <li>Profile is saved on the volume; this setup page disables.</li>
-    </ol>
+
+  <div class="card hidden" id="doneCard">
+    <strong style="color:#6ee7b7">Setup complete</strong>
+    <p class="note">ChatGPT profile is saved. Future ERMI runs will reuse this session. You can close this page and use <code>GET /run</code>.</p>
   </div>
 </div>
 <script>
-const token = new URLSearchParams(location.search).get("token") || localStorage.getitem("ownerToken") || "";
+const token = new URLSearchParams(location.search).get("token") || localStorage.getItem("ownerToken") || "";
 if (token) localStorage.setItem("ownerToken", token);
 const headers = token
   ? { "Authorization": "Bearer " + token, "Content-Type": "application/json" }
@@ -82,7 +77,11 @@ const statusEl = document.getElementById("status");
 const detailEl = document.getElementById("detail");
 const urlEl = document.getElementById("url");
 const shot = document.getElementById("shot");
+const heroCard = document.getElementById("heroCard");
+const liveCard = document.getElementById("liveCard");
+const doneCard = document.getElementById("doneCard");
 let pollShot = null;
+let pollAuth = null;
 let setupDone = false;
 
 function setStatus(text, cls) {
@@ -90,28 +89,39 @@ function setStatus(text, cls) {
   statusEl.className = "badge " + (cls || "wait");
 }
 
+function showLive() {
+  heroCard.classList.add("hidden");
+  liveCard.classList.remove("hidden");
+  doneCard.classList.add("hidden");
+}
+
+function showDone() {
+  setupDone = true;
+  setStatus("Setup complete", "ok");
+  heroCard.classList.add("hidden");
+  liveCard.classList.add("hidden");
+  doneCard.classList.remove("hidden");
+  if (pollShot) { clearInterval(pollShot); pollShot = null; }
+  if (pollAuth) { clearInterval(pollAuth); pollAuth = null; }
+}
+
 async function refreshStatus() {
   try {
-    const r = await fetch("/setup/status", { headers });
+    const r = await fetch("/setup/status?detect=1", { headers });
     const j = await r.json();
-    if (j.setupComplete) {
-      setupDone = true;
-      setStatus("Setup complete", "ok");
-      detailEl.textContent = "Profile preserved. You can close this page and use Start ERMI Worker.";
-      if (pollShot) { clearInterval(pollShot); pollShot = null; }
-      return;
+    if (j.setupComplete || j.authenticated) {
+      showDone();
+      detailEl.textContent = j.message || "Authenticated";
+      return true;
     }
-    if (j.authenticated) {
-      setStatus("Authenticated", "ok");
-      detailEl.textContent = j.message || "";
-    } else {
-      setStatus("Waiting for sign-in", "wait");
-      detailEl.textContent = j.message || "";
-    }
+    setStatus("Waiting for sign-in", "wait");
+    if (j.message) detailEl.textContent = j.message;
     if (j.lastUrl || j.url) urlEl.textContent = j.lastUrl || j.url;
+    return false;
   } catch (e) {
     setStatus("Error", "err");
     detailEl.textContent = e.message;
+    return false;
   }
 }
 
@@ -120,7 +130,7 @@ async function loadShot() {
   try {
     const r = await fetch("/setup/screenshot?t=" + Date.now(), { headers });
     if (!r.ok) {
-      if (r.status === 403) { setupDone = true; setStatus("Setup complete", "ok"); return; }
+      if (r.status === 403) { showDone(); return; }
       return;
     }
     const blob = await r.blob();
@@ -128,7 +138,7 @@ async function loadShot() {
     const prev = shot.src;
     shot.src = url;
     if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
-  } catch (_) }
+  } catch (_) {}
 }
 
 async function action(body) {
@@ -140,28 +150,37 @@ async function action(body) {
   return j;
 }
 
-document.getElementById("btnStart").onclick = async () => {
-  detailEl.textContent = "Starting browser…";
-  const r = await fetch("/setup/browser", { method: "POST", headers });
-  const j = await r.json();
-  detailEl.textContent = j.message || j.error || JSON.stringify(j);
-  if (j.url) urlEl.textContent = j.url;
-  await refreshStatus();
-  await loadShot();
-  if (!pollShot) pollShot = setInterval(loadShot, 2500);
-};
-
-document.getElementById("btnCheck").onclick = async () => {
-  const r = await fetch("/setup/status?detect=1", { headers });
-  const j = await r.json();
-  detailEl.textContent = j.message || JSON.stringify(j);
-  if (j.url) urlEl.textContent = j.url;
-  await refreshStatus();
-  await loadShot();
+document.getElementById("btnSignIn").onclick = async () => {
+  const btn = document.getElementById("btnSignIn");
+  btn.disabled = true;
+  detailEl.textContent = "Starting server browser…";
+  setStatus("Starting…", "wait");
+  try {
+    const r = await fetch("/setup/start", { method: "POST", headers });
+    const j = await r.json();
+    if (!j.ok) {
+      detailEl.textContent = j.error || "Failed to start browser";
+      setStatus("Error", "err");
+      btn.disabled = false;
+      return;
+    }
+    detailEl.textContent = j.message || "Browser ready — sign in below";
+    if (j.url) urlEl.textContent = j.url;
+    showLive();
+    await loadShot();
+    if (!pollShot) pollShot = setInterval(loadShot, 2200);
+    if (!pollAuth) pollAuth = setInterval(async () => {
+      const done = await refreshStatus();
+      if (done) await loadShot();
+    }, 3500);
+  } catch (e) {
+    detailEl.textContent = e.message;
+    setStatus("Error", "err");
+    btn.disabled = false;
+  }
 };
 
 document.getElementById("btnRefresh").onclick = () => loadShot();
-
 shot.onclick = (e) => {
   const rect = shot.getBoundingClientRect();
   const scaleX = shot.naturalWidth / rect.width;
@@ -170,7 +189,6 @@ shot.onclick = (e) => {
   const y = Math.round((e.clientY - rect.top) * scaleY);
   action({ type: "click", x, y });
 };
-
 document.getElementById("btnType").onclick = () => {
   const text = document.getElementById("typeInput").value;
   if (!text) return;
@@ -180,11 +198,14 @@ document.getElementById("btnEnter").onclick = () => action({ type: "press", key:
 document.getElementById("btnClear").onclick = () => action({ type: "type", text: "", clear: true });
 document.getElementById("btnScrollDown").onclick = () => action({ type: "scroll", dy: 400 });
 document.getElementById("btnScrollUp").onclick = () => action({ type: "scroll", dy: -400 });
-document.getElementById("btnHome").onclick = () => action({ type: "goto", url: "https://chatgpt.com/" });
 
-refreshStatus();
-loadShot();
-setInterval(refreshStatus, 5000);
+(async () => {
+  try {
+    const r = await fetch("/setup/status", { headers });
+    const j = await r.json();
+    if (j.setupComplete) showDone();
+  } catch (_) {}
+})();
 </script>
 </body>
 </html>
