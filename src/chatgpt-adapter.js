@@ -172,6 +172,10 @@ class ChatGPTAdapter {
   }
   async detectPageState() {
     const url = this.page.url();
+    try {
+      const title = await this.page.title();
+      if (/just a moment|verif(y|ying).{0,20}human|attention required/i.test(title || '')) return 'CLOUDFLARE';
+    } catch (_) {}
     if (url.includes('/auth') || url.includes('login.openai') || url.includes('accounts.google')) return 'AUTH_PAGE';
     const authed = await this.isAuthenticated();
     if (!authed) return 'NOT_AUTHENTICATED';
