@@ -13,6 +13,7 @@ h1{font-size:1.15rem;font-weight:600}
 .badge.wait{background:#3d2e00;color:#fbbf24}
 .badge.ok{background:#064e3b;color:#6ee7b7}
 .badge.err{background:#450a0a;color:#fca5a5}
+.badge.cf{background:#1e3a5f;color:#93c5fd}
 .wrap{max-width:960px;margin:0 auto;padding:1rem}
 .card{background:#1a1d24;border:1px solid #2a2d35;border-radius:12px;padding:1.1rem;margin-bottom:1rem}
 .viewport{position:relative;background:#000;border-radius:10px;overflow:hidden;touch-action:manipulation;user-select:none;min-height:200px}
@@ -20,10 +21,13 @@ h1{font-size:1.15rem;font-weight:600}
 .toolbar{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem;align-items:center}
 button,.btn{background:#3b82f6;color:#fff;border:none;padding:.6rem 1.15rem;border-radius:8px;font-size:.95rem;cursor:pointer;font-weight:600}
 button.secondary{background:#2a2d35;color:#e8eaed;border:1px solid #3f4450;font-weight:500}
+button.warn{background:#b45309;color:#fff}
 button:disabled{opacity:.5;cursor:not-allowed}
 button.primary-lg{font-size:1.05rem;padding:.75rem 1.5rem;width:100%;max-width:320px}
 input[type=text],input[type=password]{flex:1;min-width:140px;padding:.55rem .75rem;border-radius:8px;border:1px solid #3f4450;background:#0f1115;color:#e8eaed;font-size:.95rem}
 .note{font-size:.85rem;color:#9ca3af;margin-top:.75rem;line-height:1.5}
+.alert{font-size:.9rem;line-height:1.45;padding:.75rem 1rem;border-radius:8px;margin-top:.75rem}
+.alert.cf{background:#172554;border:1px solid #1d4ed8;color:#bfdbfe}
 .url{font-size:.75rem;color:#6b7280;word-break:break-all;margin-top:.5rem}
 .hero{text-align:center;padding:1.5rem 0 .5rem}
 .hero p{color:#c5c9d0;font-size:.95rem;margin:.75rem auto 1.25rem;max-width:28rem;line-height:1.5}
@@ -43,6 +47,11 @@ input[type=text],input[type=password]{flex:1;min-width:140px;padding:.55rem .75r
   </div>
 
   <div class="card hidden" id="liveCard">
+    <div id="cfBanner" class="alert cf hidden">
+      <strong>Cloudflare check</strong><br/>
+      Tap the “Verify you are human” box <em>once</em>, then wait 5–10 seconds. Rapid re-taps reset the challenge.
+      You can also press <b>Help verification</b> below for a careful auto-click.
+    </div>
     <div class="viewport" id="viewport">
       <img id="shot" alt="Live browser – tap to click"/>
     </div>
@@ -56,8 +65,9 @@ input[type=text],input[type=password]{flex:1;min-width:140px;padding:.55rem .75r
       <button id="btnScrollDown" class="secondary">Scroll ↓</button>
       <button id="btnScrollUp" class="secondary">Scroll ↑</button>
       <button id="btnRefresh" class="secondary">Refresh</button>
+      <button id="btnCf" class="warn">Help verification</button>
     </div>
-    <p class="note">Tap the screenshot to click. Authentication is detected automatically when the ChatGPT home/composer appears.</p>
+    <p class="note">Tap the screenshot to click. After Cloudflare clears, complete normal ChatGPT login. Auth is detected automatically.</p>
     <div id="url" class="url"></div>
   </div>
 
@@ -80,6 +90,7 @@ const shot = document.getElementById("shot");
 const heroCard = document.getElementById("heroCard");
 const liveCard = document.getElementById("liveCard");
 const doneCard = document.getElementById("doneCard");
+const cfBanner = document.getElementById("cfBanner");
 let pollShot = null;
 let pollAuth = null;
 let setupDone = false;
@@ -105,6 +116,15 @@ function showDone() {
   if (pollAuth) { clearInterval(pollAuth); pollAuth = null; }
 }
 
+function setCfVisible(on) {
+  if (on) {
+    cfBanner.classList.remove("hidden");
+    setStatus("Cloudflare check", "cf");
+  } else {
+    cfBanner.classList.add("hidden");
+  }
+}
+
 async function refreshStatus() {
   try {
     const r = await fetch("/setup/status?detect=1", { headers });
@@ -114,8 +134,14 @@ async function refreshStatus() {
       detailEl.textContent = j.message || "Authenticated";
       return true;
     }
-    setStatus("Waiting for sign-in", "wait");
-    if (j.message) detailEl.textContent = j.message;
+    if (j.cloudflare || (j.lastChallenge && j.lastChallenge.challenge)) {
+      setCfVisible(true);
+      detailEl.textContent = j.message || "Waiting for human verification…";
+    } else {
+      setCfVisible(false);
+      setStatus("Waiting for sign-in", "wait");
+      if (j.message) detailEl.textContent = j.message;
+    }
     if (j.lastUrl || j.url) urlEl.textContent = j.lastUrl || j.url;
     return false;
   } catch (e) {
@@ -145,8 +171,9 @@ async function action(body) {
   const r = await fetch("/setup/action", { method: "POST", headers, body: JSON.stringify(body) });
   const j = await r.json();
   if (j.url) urlEl.textContent = j.url;
+  if (j.cloudflare) setCfVisible(true);
   if (!j.ok) detailEl.textContent = j.error || "Action failed";
-  setTimeout(loadShot, 350);
+  setTimeout(loadShot, 400);
   return j;
 }
 
@@ -166,13 +193,14 @@ document.getElementById("btnSignIn").onclick = async () => {
     }
     detailEl.textContent = j.message || "Browser ready — sign in below";
     if (j.url) urlEl.textContent = j.url;
+    if (j.cloudflare) setCfVisible(true);
     showLive();
     await loadShot();
-    if (!pollShot) pollShot = setInterval(loadShot, 2200);
+    if (!pollShot) pollShot = setInterval(loadShot, 2000);
     if (!pollAuth) pollAuth = setInterval(async () => {
       const done = await refreshStatus();
       if (done) await loadShot();
-    }, 3500);
+    }, 3000);
   } catch (e) {
     detailEl.textContent = e.message;
     setStatus("Error", "err");
@@ -181,6 +209,19 @@ document.getElementById("btnSignIn").onclick = async () => {
 };
 
 document.getElementById("btnRefresh").onclick = () => loadShot();
+document.getElementById("btnCf").onclick = async () => {
+  detailEl.textContent = "Attempting careful verification click…";
+  const j = await action({ type: "cf-click" });
+  if (j.cleared) {
+    setCfVisible(false);
+    detailEl.textContent = "Challenge cleared — continue sign-in if needed.";
+    setStatus("Waiting for sign-in", "wait");
+  } else {
+    detailEl.textContent = "Still verifying. Tap the checkbox once in the view, wait 8 seconds, then try Help verification again.";
+  }
+  await refreshStatus();
+};
+
 shot.onclick = (e) => {
   const rect = shot.getBoundingClientRect();
   const scaleX = shot.naturalWidth / rect.width;
