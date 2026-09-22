@@ -1,42 +1,43 @@
 'use strict';
 const express = require('express');
-const helmet = require('helmet');
-const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const path = require('path');
-const { config, isSetupComplete, getRunCounter, resolvePrompt, PROMPTS } = require('./config');
-const logger = require('./logger');
-const { getRunExecutor } = require('./run-executor');
-const { getSetupController } = require('./setup-controller');
+const { config, isSetupComplete, getRunCounter } = require('./config');
+const { createLogger } = require('./logger');
 const { getBrowserManager } = require('./browser-manager');
-const { HUMAN_LABELS } = require('./states');
+const { getSetupController } = require('./setup-controller');
+const { getRunExecutor } = require('./run-executor');
 
+const log = createLogger('server');
 const app = express();
-const executor = getRunExecutor(logger);
-const setup = getSetupController(logger);
-
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: false }));
-app.use(express.json({ limit: '32kb' }));
-app.use(express.static(path.join(__dirname, '..', 'public')));
-
-const controlLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '2mb' }));
 
 function requireOwner(req, res, next) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ')
-    ? header.slice(7)
-    : (req.query.token || (req.body && req.body.token) || '');
-  if (!config.ownerToken || config.ownerToken.length < 16) {
-    logger.error('OWNER_TOKEN not configured');
-    return res.status(503).json({ error: 'Server misconfigured: OWNER_TOKEN required' });
+  if (!config.ownerToken) {
+    return res.status(503).json({ error: 'OWNER_TOKEN not configured' });
   }
+  const auth = req.headers.authorization || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const headerTok = req.headers['x-owner-token'] || '';
+  const queryTok = (req.query && req.query.token) || '';
+  const token = bearer || headerTok || queryTok;
   if (token !== config.ownerToken) {
-    logger.warn('Unauthorized', { ip: req.ip, path: req.path });
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  next();
+  return next();
 }
+
+const controlLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests' },
+});
+
+const setup = getSetupController(log);
+const executor = getRunExecutor(log);
+const bm = getBrowserManager(log);
 
 app.get('/health', (req, res) => {
   res.json({
@@ -49,33 +50,25 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/status', (req, res) => {
-  const st = executor.getStatus();
+  const run = executor.getStatus();
   res.json({
-    state: st.state,
-    label: st.label || HUMAN_LABELS[st.state],
-    runId: st.id || null,
-    locked: st.locked,
-    setupComplete: st.setupComplete,
-    error: st.error || null,
-    message: st.message || null,
-    promptId: st.promptId || null,
-    runCounter: getRunCounter(),
-    startedAt: st.startedAt || null,
-    finishedAt: st.finishedAt || null,
+    setupComplete: isSetupComplete(),
+    run,
+    browserLocked: bm.isLocked(),
   });
 });
 
-/** Primary trigger: GET /run?token=...&prompt=worker|discovery */
 async function handleRun(req, res) {
-  const explicit = (req.query.prompt || (req.body && req.body.prompt) || '').toString().toLowerCase().trim();
-  const promptChoice = explicit && PROMPTS[explicit] ? explicit : null;
-  logger.info('RUN trigger', { method: req.method, prompt: promptChoice || 'auto' });
-  const result = await executor.startRun({ promptId: promptChoice });
-  if (!result.ok) {
-    const code = result.error && /progress|locked|concurrent/i.test(result.error) ? 409 : 400;
+  try {
+    const body = req.method === 'POST' ? req.body || {} : {};
+    const promptId = body.promptId || req.query.promptId || 'worker';
+    const result = await executor.startRun({ promptId });
+    const code = result.ok ? 202 : result.state === 'LOCKED' || result.status === 'running' ? 409 : 400;
     return res.status(code).json(result);
+  } catch (e) {
+    log.error('run error: ' + e.message);
+    return res.status(500).json({ ok: false, error: e.message, status: 'error' });
   }
-  res.status(202).json(result);
 }
 
 app.get('/run', controlLimiter, requireOwner, handleRun);
@@ -85,85 +78,117 @@ app.get('/run/status', controlLimiter, requireOwner, (req, res) => {
   res.json(executor.getStatus());
 });
 
-/** One-shot: start Chromium + navigate to ChatGPT for sign-in */
 app.post('/setup/start', controlLimiter, requireOwner, async (req, res) => {
-  if (isSetupComplete()) {
-    return res.status(403).json({ error: 'Setup already complete. Profile is saved.' });
+  try {
+    const result = await setup.startSetupBrowser();
+    return res.json(result);
+  } catch (e) {
+    log.error('setup/start: ' + e.message);
+    return res.status(500).json({ ok: false, error: e.message });
   }
-  const result = await setup.startSetupBrowser();
-  res.status(result.ok ? 200 : 500).json(result);
 });
 
-/** Backward-compatible alias */
 app.post('/setup/browser', controlLimiter, requireOwner, async (req, res) => {
-  if (isSetupComplete()) {
-    return res.status(403).json({ error: 'Setup already complete. Setup route is disabled.' });
+  try {
+    const result = await setup.startSetupBrowser();
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
   }
-  const result = await setup.startSetupBrowser();
-  res.status(result.ok ? 200 : 500).json(result);
 });
 
 app.get('/setup/status', controlLimiter, requireOwner, async (req, res) => {
-  if ((req.query.detect === '1' || req.query.auto === '1') && !isSetupComplete()) {
-    const det = await setup.detectAuthentication();
-    return res.json(Object.assign({}, setup.getStatus(), det));
+  try {
+    if (req.query.detect === '1') {
+      const detected = await setup.detectAuthentication();
+      return res.json(Object.assign({}, setup.getStatus(), detected));
+    }
+    return res.json(setup.getStatus());
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
   }
-  res.json(setup.getStatus());
 });
 
 app.get('/setup/screenshot', controlLimiter, requireOwner, async (req, res) => {
-  if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete' });
   try {
     const buf = await setup.getScreenshot();
-    res.setHeader('Content-Type', 'image/jpeg');
-    res.setHeader('Cache-Control', 'no-store');
-    res.send(buf);
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Cache-Control', 'no-store');
+    return res.send(buf);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    if (String(e.message).includes('already complete')) {
+      return res.status(403).json({ error: e.message });
+    }
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/setup/import-cookies', controlLimiter, requireOwner, async (req, res) => {
+  try {
+    const body = req.body || {};
+    let cookies = body.cookies;
+    if (typeof cookies === 'string') {
+      try { cookies = JSON.parse(cookies); } catch (e) {
+        return res.status(400).json({ ok: false, error: 'cookies must be JSON array' });
+      }
+    }
+    if (!Array.isArray(cookies)) {
+      return res.status(400).json({ ok: false, error: 'Body must include cookies: [...]' });
+    }
+    const result = await setup.importSessionCookies(cookies);
+    return res.json(result);
+  } catch (e) {
+    log.error('import-cookies: ' + e.message);
+    return res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 app.post('/setup/action', controlLimiter, requireOwner, async (req, res) => {
-  if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete' });
-  const result = await setup.performAction(req.body || {});
-  res.status(result.ok ? 200 : 400).json(result);
+  try {
+    const result = await setup.performAction(req.body || {});
+    return res.json(result);
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.get('/setup', (req, res) => {
-  if (isSetupComplete()) {
-    return res.status(403).send(
-      '<!DOCTYPE html><html><body style="font-family:system-ui;background:#0f1115;color:#e8eaed;padding:2rem">' +
-        '<h1>Setup complete</h1><p>ChatGPT profile is saved on the persistent volume. Use GET /run to trigger ERMI runs.</p></body></html>'
-    );
+  try {
+    const html = setup.getSetupPageHtml();
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set('Cache-Control', 'no-store');
+    return res.send(html);
+  } catch (e) {
+    return res.status(500).send('Setup page unavailable');
   }
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(setup.getSetupPageHtml());
 });
 
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+  res.json({
+    service: 'ermi-worker-agent',
+    setupComplete: isSetupComplete(),
+    health: '/health',
+    setup: '/setup',
+    run: '/run',
+  });
 });
 
 app.use((err, req, res, next) => {
-  logger.error('Express error: ' + err.message);
-  res.status(500).json({ error: 'Internal server error' });
+  log.error('Unhandled: ' + (err && err.stack));
+  res.status(500).json({ error: 'Internal error' });
 });
 
-async function shutdown(signal) {
-  logger.info('Received ' + signal);
-  await getBrowserManager(logger).shutdown();
-  process.exit(0);
-}
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
-
-if (!config.ownerToken || config.ownerToken.length < 16) {
-  logger.warn('WARNING: OWNER_TOKEN missing or weak');
-}
-
-app.listen(config.port, '0.0.0.0', () => {
-  logger.info('ERMI Worker listening on :' + config.port);
-  logger.info('Setup complete: ' + isSetupComplete());
-  logger.info('Run counter: ' + getRunCounter());
-  logger.info('Profile: ' + config.profilePath);
+const server = app.listen(config.port, '0.0.0.0', () => {
+  log.info('Listening on ' + config.port + ' setupComplete=' + isSetupComplete());
 });
+
+async function shutdown() {
+  log.info('Shutting down…');
+  try { await bm.shutdown(); } catch (e) {}
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 5000);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+module.exports = { app };
