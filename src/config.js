@@ -13,8 +13,8 @@ const config = {
   headless: process.env.HEADLESS !== 'false',
   appBaseUrl: process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 3000}`,
   maxConcurrentRuns: 1,
-  chatgptUrl: 'https://chatgft.com/',
-  chatgptNewChatUrl: 'https://chatgft.com/',
+  chatgptUrl: 'https://chatgpt.com/',
+  chatgptNewChatUrl: 'https://chatgpt.com/',
   ermiPrompt: `You are an ERMI Worker Agent.
 
 Start at the ERMI Intelligence Briefing — Control Center:
@@ -56,6 +56,6 @@ function saveRunState(state) {
 }
 function clearRunState() {
   const p = path.join(config.dataPath, 'current-run.json');
-  if (fs.existsSync(p)) fs.unlincSync(p);
+  if (fs.existsSync(p)) fs.unlinkSync(p);
 }
 module.exports = { config, isSetupComplete, markSetupComplete, loadRunState, saveRunState, clearRunState };
