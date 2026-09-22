@@ -3,15 +3,10 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const { config } = require('./config');
 
-/** Stealth patches applied before any page script runs. */
 const STEALTH_INIT = `
 (() => {
-  try {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  } catch (e) {}
-  try {
-    window.chrome = window.chrome || { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} };
-  } catch (e) {}
+  try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (e) {}
+  try { window.chrome = window.chrome || { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} }; } catch (e) {}
   try {
     const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
     if (originalQuery) {
@@ -30,9 +25,7 @@ const STEALTH_INIT = `
       ],
     });
   } catch (e) {}
-  try {
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-  } catch (e) {}
+  try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (e) {}
   try {
     const getParameter = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function (param) {
@@ -95,7 +88,7 @@ class BrowserManager {
     fs.mkdirSync(profileDir, { recursive: true });
     this.log.info('Launching Chromium profile=' + profileDir + ' headless=' + headless);
 
-    this.context = await chromium.launchPersistentContext(profileDir, {
+    const launchOpts = {
       headless: headless,
       args: [
         '--disable-blink-features=AutomationControlled',
@@ -129,8 +122,21 @@ class BrowserManager {
       extraHTTPHeaders: {
         'Accept-Language': 'en-US,en;q=0.9',
       },
-    });
-
+    };
+    if (config.proxyServer) {
+      const proxy = { server: config.proxyServer };
+      try {
+        const u = new URL(config.proxyServer);
+        if (u.username) {
+          proxy.server = u.protocol + '//' + u.host;
+          proxy.username = decodeURIComponent(u.username);
+          proxy.password = decodeURIComponent(u.password || '');
+        }
+      } catch (_) {}
+      launchOpts.proxy = proxy;
+      this.log.info('Using proxy ' + (launchOpts.proxy.server || config.proxyServer));
+    }
+    this.context = await chromium.launchPersistentContext(profileDir, launchOpts);
     await this.context.addInitScript(STEALTH_INIT);
 
     const pages = this.context.pages();
@@ -138,11 +144,7 @@ class BrowserManager {
 
     await this.page.route('**/*', (route) => {
       const url = route.request().url();
-      if (
-        /doubleclick|google-analytics|googletagmanager|facebook\.net|adservice|hotjar|segment\.io/i.test(
-          url
-        )
-      ) {
+      if (/doubleclick|google-analytics|googletagmanager|facebook\.net|adservice|hotjar|segment\.io/i.test(url)) {
         return route.abort();
       }
       return route.continue();
@@ -159,12 +161,7 @@ class BrowserManager {
   async screenshot(opts) {
     opts = opts || {};
     const page = await this.getPage();
-    const buf = await page.screenshot({
-      type: 'jpeg',
-      quality: opts.quality || 70,
-      fullPage: !!opts.fullPage,
-    });
-    return buf;
+    return page.screenshot({ type: 'jpeg', quality: opts.quality || 70, fullPage: !!opts.fullPage });
   }
   async _safeClose() {
     try {
@@ -178,9 +175,7 @@ class BrowserManager {
   }
   async shutdown() {
     this.log.info('Shutting down browser (profile preserved)');
-    try {
-      if (this.context) await this.context.close().catch(function () {});
-    } catch (e) {}
+    try { if (this.context) await this.context.close().catch(function () {}); } catch (e) {}
     this.context = null;
     this.page = null;
     this.browser = null;
@@ -195,30 +190,15 @@ class BrowserManager {
     page = page || this.page;
     if (!page) return { challenge: false };
     try {
-      const info = await page.evaluate(() => {
+      return await page.evaluate(() => {
         const title = (document.title || '').toLowerCase();
         const body = (document.body && document.body.innerText) || '';
         const html = document.documentElement ? document.documentElement.innerHTML : '';
-        const challengeTitle =
-          /just a moment|attention required|verif(y|ying).{0,20}human|checking your browser|security check/i.test(
-            title
-          );
-        const challengeBody =
-          /verif(y|ying).{0,30}(you.?re|that you are).{0,10}human|checking your browser before you proceed|enable javascript and cookies|cf-turnstile|challenge-platform|challenges\.cloudflare/i.test(
-            body + ' ' + html.slice(0, 8000)
-          );
-        const hasTurnstile =
-          !!document.querySelector(
-            'iframe[src*="challenges.cloudflare"], iframe[src*="turnstile"], .cf-turnstile, [name="cf-turnstile-response"]'
-          );
-        return {
-          challenge: challengeTitle || challengeBody || hasTurnstile,
-          hasTurnstile,
-          title: document.title,
-          url: location.href,
-        };
+        const challengeTitle = /just a moment|attention required|verif(y|ying).{0,20}human|checking your browser|security check/i.test(title);
+        const challengeBody = /verif(y|ying).{0,30}(you.?re|that you are).{0,10}human|checking your browser before you proceed|enable javascript and cookies|cf-turnstile|challenge-platform|challenges\.cloudflare/i.test(body + ' ' + html.slice(0, 8000));
+        const hasTurnstile = !!document.querySelector('iframe[src*="challenges.cloudflare"], iframe[src*="turnstile"], .cf-turnstile, [name="cf-turnstile-response"]');
+        return { challenge: challengeTitle || challengeBody || hasTurnstile, hasTurnstile, title: document.title, url: location.href };
       });
-      return info;
     } catch (e) {
       return { challenge: false, error: e.message };
     }
@@ -234,11 +214,7 @@ class BrowserManager {
         const fu = f.url() || '';
         if (!/challenges\.cloudflare|turnstile/i.test(fu)) continue;
         try {
-          const box = await f
-            .locator('input[type="checkbox"], #challenge-stage, .cb-lb, body')
-            .first()
-            .boundingBox({ timeout: 2000 })
-            .catch(() => null);
+          const box = await f.locator('input[type="checkbox"], #challenge-stage, .cb-lb, body').first().boundingBox({ timeout: 2000 }).catch(() => null);
           if (box) {
             const x = box.x + box.width * 0.35;
             const y = box.y + box.height * 0.5;
@@ -247,12 +223,11 @@ class BrowserManager {
             await page.mouse.move(x, y, { steps: 12 });
             await page.waitForTimeout(80 + Math.floor(Math.random() * 120));
             await page.mouse.click(x, y, { delay: 40 + Math.floor(Math.random() * 60) });
-            this.log.info('Turnstile click attempted in frame ' + fu.slice(0, 80));
+            this.log.info('Turnstile click attempted in frame');
             return true;
           }
         } catch (_) {}
       }
-
       const handle = await page.$('.cf-turnstile, [data-sitekey], iframe[src*="challenges.cloudflare"]');
       if (handle) {
         const box = await handle.boundingBox();
@@ -285,12 +260,37 @@ class BrowserManager {
         this.log.info('Cloudflare challenge cleared');
         return { ok: true, cleared: true };
       }
-      if (autoClick && !clicked) {
-        clicked = await this.tryClickTurnstile(page);
-      }
+      if (autoClick && !clicked) clicked = await this.tryClickTurnstile(page);
       await page.waitForTimeout(1500 + Math.floor(Math.random() * 1000));
     }
     return { ok: false, cleared: false, message: 'Cloudflare challenge still present after timeout' };
+  }
+
+  async importCookies(cookies) {
+    if (!Array.isArray(cookies) || cookies.length === 0) {
+      throw new Error('cookies must be a non-empty array');
+    }
+    await this.ensureBrowser();
+    const normalized = cookies.map(function (raw) {
+      const c = Object.assign({}, raw);
+      if (!c.path) c.path = '/';
+      if (c.expirationDate && !c.expires) c.expires = Math.floor(c.expirationDate);
+      if (c.sameSite === 'no_restriction' || c.sameSite === 'None') c.sameSite = 'None';
+      if (c.sameSite === 'lax' || c.sameSite === 'Lax') c.sameSite = 'Lax';
+      if (c.sameSite === 'strict' || c.sameSite === 'Strict') c.sameSite = 'Strict';
+      delete c.expirationDate;
+      delete c.storeId;
+      delete c.hostOnly;
+      delete c.session;
+      delete c.id;
+      return c;
+    }).filter(function (c) {
+      return c.name && c.value != null && c.domain;
+    });
+    if (normalized.length === 0) throw new Error('No valid cookies after normalization');
+    await this.context.addCookies(normalized);
+    this.log.info('Imported ' + normalized.length + ' cookies');
+    return { count: normalized.length };
   }
 }
 
