@@ -10,7 +10,9 @@ class SetupController {
     this.setupInProgress = false;
     this.lastAuthCheck = null;
     this.lastUrl = null;
+    this.autoDetectTimer = null;
   }
+
   getStatus() {
     return {
       setupComplete: isSetupComplete(),
@@ -20,9 +22,13 @@ class SetupController {
       profilePath: config.profilePath,
     };
   }
+
   async startSetupBrowser() {
     if (isSetupComplete()) {
-      return { ok: false, error: 'Setup already complete. Re-authentication requires manual profile reset.' };
+      return {
+        ok: false,
+        error: 'Setup already complete. Re-authentication requires clearing the setup flag / profile.',
+      };
     }
     this.setupInProgress = true;
     try {
@@ -31,9 +37,11 @@ class SetupController {
       await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
       this.lastUrl = page.url();
       this.log.info('Setup browser launched at ' + this.lastUrl);
+      this._startAutoDetect();
       return {
         ok: true,
-        message: 'Browser started. Use the live view below to sign in to ChatGPT (email, Google, or phone). Then click Check Authentication.',
+        message:
+          'Sign in with ChatGPT in the live view below (email, Google, or phone + MFA). Authentication is detected automatically.',
         url: this.lastUrl,
       };
     } catch (e) {
@@ -41,29 +49,68 @@ class SetupController {
       return { ok: false, error: e.message };
     }
   }
+
+  _startAutoDetect() {
+    if (this.autoDetectTimer) clearInterval(this.autoDetectTimer);
+    const self = this;
+    this.autoDetectTimer = setInterval(function () {
+      if (isSetupComplete()) {
+        clearInterval(self.autoDetectTimer);
+        self.autoDetectTimer = null;
+        return;
+      }
+      self.detectAuthentication().catch(function () {});
+    }, 4000);
+  }
+
   async detectAuthentication() {
     if (isSetupComplete()) return { authenticated: true, setupComplete: true };
     try {
       const page = await this.bm.getPage();
       const adapter = new ChatGPTAdapter(page, this.log);
       this.lastUrl = page.url();
-      if (!this.lastUrl.includes('chatgpt.com') && !this.lastUrl.includes('openai.com') && !this.lastUrl.includes('google.com')) {
+      if (
+        !this.lastUrl.includes('chatgpt.com') &&
+        !this.lastUrl.includes('openai.com') &&
+        !this.lastUrl.includes('google.com') &&
+        !this.lastUrl.includes('microsoft.com') &&
+        !this.lastUrl.includes('apple.com')
+      ) {
         await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         this.lastUrl = page.url();
       }
       const authed = await adapter.isAuthenticated();
-      this.lastAuthCheck = { at: new Date().toISOString(), authenticated: authed, url: this.lastUrl };
+      this.lastAuthCheck = {
+        at: new Date().toISOString(),
+        authenticated: authed,
+        url: this.lastUrl,
+      };
       if (authed) {
         markSetupComplete();
         this.setupInProgress = false;
+        if (this.autoDetectTimer) {
+          clearInterval(this.autoDetectTimer);
+          this.autoDetectTimer = null;
+        }
         this.log.info('Authentication detected – setup complete');
-        return { authenticated: true, setupComplete: true, message: 'Authentication successful. Profile saved. Setup route will be disabled.', url: this.lastUrl };
+        return {
+          authenticated: true,
+          setupComplete: true,
+          message: 'Authentication successful. Profile saved. Setup is complete.',
+          url: this.lastUrl,
+        };
       }
-      return { authenticated: false, setupComplete: false, message: 'Not yet authenticated. Complete ChatGPT sign-in in the live view (including MFA if prompted).', url: this.lastUrl };
+      return {
+        authenticated: false,
+        setupComplete: false,
+        message: 'Not yet authenticated. Complete ChatGPT sign-in in the live view (including MFA if prompted).',
+        url: this.lastUrl,
+      };
     } catch (e) {
       return { authenticated: false, error: e.message };
     }
   }
+
   async getScreenshot() {
     if (isSetupComplete()) throw new Error('Setup already complete');
     try {
@@ -79,6 +126,7 @@ class SetupController {
       throw e;
     }
   }
+
   async performAction(action) {
     if (isSetupComplete()) return { ok: false, error: 'Setup already complete' };
     const page = await this.bm.getPage();
@@ -116,10 +164,15 @@ class SetupController {
       return { ok: false, error: e.message };
     }
   }
+
   getSetupPageHtml() {
-    return require('fs').readFileSync(require('path').join(__dirname, '..', 'public', 'setup.html'), 'utf8');
+    return require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'public', 'setup.html'),
+      'utf8'
+    );
   }
 }
+
 let setupCtrl = null;
 function getSetupController(logger) {
   if (!setupCtrl) setupCtrl = new SetupController(logger);
