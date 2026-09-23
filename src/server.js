@@ -1,7 +1,7 @@
 'use strict';
 const express = require('express');
 const rateLimit = require('express-rate-limit');
-const { config, isSetupComplete, getRunCounter, getProxyServer, setRuntimeProxy, getRuntimeProxyInfo } = require('./config');
+const { config, isSetupComplete, getRunCounter, getProxyServer, setRuntimeProxy, getRuntimeProxyInfo, validateProxyUrl } = require('./config');
 const log = require('./logger');
 const { getBrowserManager } = require('./browser-manager');
 const { getSetupController } = require('./setup-controller');
@@ -50,10 +50,22 @@ app.get('/health', (req, res) => {
 
 app.get('/status', (req, res) => {
   const run = executor.getStatus();
+  const info = getRuntimeProxyInfo();
+  const net = typeof bm.getNetworkInfo === 'function' ? bm.getNetworkInfo() : {};
   res.json({
     setupComplete: isSetupComplete(),
     run,
     browserLocked: bm.isLocked(),
+    network: {
+      mode: net.networkMode || null,
+      desiredProxyValid: !!info.valid,
+      desiredProxySet: !!info.server,
+      activeBrowserProxySet: !!(net.activeProxy),
+      proxyChangedSinceLaunch: !!net.proxyChangedSinceLaunch,
+      lastConnectivity: net.lastConnectivity || null,
+      lastProxyUpdate: info.updatedAt || null,
+      proxySource: info.source || 'none',
+    },
   });
 });
 
@@ -75,22 +87,42 @@ app.post('/run', controlLimiter, requireOwner, handleRun);
 
 app.get('/proxy', controlLimiter, requireOwner, (req, res) => {
   const info = getRuntimeProxyInfo();
+  const net = typeof bm.getNetworkInfo === 'function' ? bm.getNetworkInfo() : {};
   res.json({
     ok: true,
-    server: getProxyServer() || '',
+    valid: !!info.valid,
+    server: info.server || '',
     updatedAt: info.updatedAt || null,
-    envFallback: config.proxyServer || '',
+    source: info.source || 'none',
+    reason: info.reason || null,
+    browserReloadRequired: !!(net.proxyChangedSinceLaunch),
+    activeBrowserProxy: net.activeProxy || '',
+    networkMode: net.networkMode || null,
   });
 });
 
 app.post('/proxy', controlLimiter, requireOwner, (req, res) => {
   try {
     const server = (req.body && (req.body.server || req.body.proxy || req.body.PROXY_SERVER)) || '';
-    const result = setRuntimeProxy(server);
-    log.info('Runtime proxy updated: ' + (result.server || '(cleared)'));
-    return res.json({ ok: true, ...result });
+    // Allow explicit clear with empty string
+    if (server === '' || server === null) {
+      const result = setRuntimeProxy('');
+      log.info('Runtime proxy cleared');
+      return res.json({ ok: true, valid: true, cleared: true, server: '', updatedAt: result.updatedAt });
+    }
+    const checked = validateProxyUrl(server);
+    if (!checked.ok || !checked.server) {
+      log.warn('Rejected invalid proxy: ' + (checked.reason || 'unknown'));
+      return res.status(400).json({ ok: false, error: 'invalid_proxy', reason: checked.reason || 'invalid' });
+    }
+    const result = setRuntimeProxy(checked.server);
+    log.info('Runtime proxy updated');
+    return res.json({ ok: true, valid: true, server: result.server, updatedAt: result.updatedAt });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message });
+    if (e && e.code === 'INVALID_PROXY') {
+      return res.status(400).json({ ok: false, error: 'invalid_proxy', reason: e.reason || e.message });
+    }
+    return res.status(500).json({ ok: false, error: 'internal' });
   }
 });
 
