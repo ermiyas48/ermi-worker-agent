@@ -130,21 +130,71 @@ class RunExecutor {
   async _execute(runId, prompt, promptHash, promptMeta) {
     try {
       this._transition(STATES.BROWSER_STARTING);
-      const launched = await this.bm.ensureBrowser({ headless: config.headless });
-      const page = launched.page;
-      const adapter = new ChatGPTAdapter(page, this.log);
+      // Network strategy: prefer last success; try proxy then direct (or reverse) before submission
+      const desiredProxy = (typeof require('./config').getProxyServer === 'function' ? require('./config').getProxyServer() : '') || '';
+      const order = desiredProxy ? ['proxy', 'direct'] : ['direct', 'proxy'];
+      let page = null;
+      let adapter = null;
+      let navError = null;
 
-      this._transition(STATES.CHATGPT_LOADING);
-      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1500);
-      try {
-        const cfWait = await this.bm.waitOutCloudflare(page, { timeout: 40000, autoClick: true });
-        if (!cfWait.cleared) this.log.warn('Cloudflare may still be present after wait');
-      } catch (e) {
-        this.log.warn('CF wait: ' + e.message);
+      for (let mi = 0; mi < order.length; mi++) {
+        const mode = order[mi];
+        if (mode === 'proxy' && !desiredProxy) continue;
+        try {
+          this.log.info('Network attempt mode=' + mode);
+          await this.bm.ensureBrowser({
+            headless: config.headless,
+            forceDirect: mode === 'direct',
+            desiredProxy: mode === 'proxy' ? desiredProxy : '',
+            desiredMode: mode,
+          });
+          // Force recreate if mode mismatch
+          if (this.bm.networkMode && this.bm.networkMode !== mode) {
+            await this.bm._safeClose();
+            await this.bm.ensureBrowser({
+              headless: config.headless,
+              forceDirect: mode === 'direct',
+              desiredProxy: mode === 'proxy' ? desiredProxy : '',
+              desiredMode: mode,
+            });
+          }
+          page = this.bm.page;
+          if (!page) throw new Error('no_page_after_launch');
+
+          this._transition(STATES.CHATGPT_LOADING, { networkMode: mode });
+          await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          await page.waitForTimeout(1500);
+          try {
+            const cfWait = await this.bm.waitOutCloudflare(page, { timeout: 40000, autoClick: true });
+            if (!cfWait.cleared) this.log.warn('Cloudflare may still be present after wait');
+          } catch (e) {
+            this.log.warn('CF wait: ' + e.message);
+          }
+          await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(function () {});
+          navError = null;
+          this.log.info('ChatGPT reachable via ' + mode);
+          break;
+        } catch (e) {
+          navError = e;
+          this.log.warn('Network mode ' + mode + ' failed: ' + e.message);
+          try { await this.bm._safeClose(); } catch (_) {}
+          page = null;
+        }
       }
-      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(function () {});
 
+      if (!page) {
+        this._transition(STATES.FAILED, {
+          error: 'PROXY_UNAVAILABLE: ' + (navError && navError.message ? navError.message : 'all network modes failed'),
+          message: 'Could not reach ChatGPT via proxy or direct. Ensure Termux/Pinggy is up and POST /proxy has a valid endpoint.',
+          status: 'error',
+        });
+        this.current.finishedAt = new Date().toISOString();
+        saveRunState(this.current);
+        this.bm.releaseLock(runId);
+        return;
+      }
+
+      adapter = new ChatGPTAdapter(page, this.log);
       this._transition(STATES.CHATGPT_READY);
       const pageState = await adapter.detectPageState();
       if (pageState === 'CLOUDFLARE' || pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') {
