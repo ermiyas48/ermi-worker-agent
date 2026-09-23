@@ -46,6 +46,9 @@ class BrowserManager {
     this.lock = false;
     this.lockOwner = null;
     this.launchPromise = null;
+    this.activeProxy = null; // proxy string used at last successful launch, or ''
+    this.networkMode = null; // 'proxy' | 'direct'
+    this.lastConnectivity = null;
   }
   isLocked() { return this.lock; }
   acquireLock(runId) {
@@ -67,17 +70,28 @@ class BrowserManager {
   }
   async ensureBrowser(opts) {
     opts = opts || {};
+    let desiredProxy = '';
+    if (opts.forceDirect) { desiredProxy = ''; }
+    else if (opts.desiredProxy !== undefined) { desiredProxy = opts.desiredProxy || ''; }
+    else { desiredProxy = ((typeof getProxyServer === 'function' ? getProxyServer() : '') || ''); }
+    const desiredMode = desiredProxy ? 'proxy' : 'direct';
     if (this.context && this.page && !this.page.isClosed()) {
-      try {
-        await this.page.evaluate(() => true);
-        return { browser: this.browser, context: this.context, page: this.page };
-      } catch (e) {
-        this.log.warn('Existing page unhealthy, restarting: ' + e.message);
+      const proxyChanged = (this.activeProxy || '') !== (desiredProxy || '');
+      if (proxyChanged && !opts.ignoreProxyChange) {
+        this.log.info('Proxy changed (was=' + (this.activeProxy || '(none)') + ' now=' + (desiredProxy || '(none)') + ') — recreating context');
         await this._safeClose();
+      } else {
+        try {
+          await this.page.evaluate(() => true);
+          return { browser: this.browser, context: this.context, page: this.page, networkMode: this.networkMode, activeProxy: this.activeProxy };
+        } catch (e) {
+          this.log.warn('Existing page unhealthy, restarting: ' + e.message);
+          await this._safeClose();
+        }
       }
     }
     if (this.launchPromise) return this.launchPromise;
-    this.launchPromise = this._launch(opts);
+    this.launchPromise = this._launch(Object.assign({}, opts, { desiredProxy: desiredProxy, desiredMode: desiredMode }));
     try { return await this.launchPromise; }
     finally { this.launchPromise = null; }
   }
@@ -123,7 +137,9 @@ class BrowserManager {
         'Accept-Language': 'en-US,en;q=0.9',
       },
     };
-    const activeProxy = (typeof getProxyServer === 'function' ? getProxyServer() : config.proxyServer) || '';
+    const activeProxy = opts.desiredProxy !== undefined
+      ? (opts.desiredProxy || '')
+      : ((typeof getProxyServer === 'function' ? getProxyServer() : config.proxyServer) || '');
     if (activeProxy) {
       const proxy = { server: activeProxy };
       try {
@@ -136,9 +152,12 @@ class BrowserManager {
       } catch (_) {}
       launchOpts.proxy = proxy;
       this.log.info('Using proxy ' + (launchOpts.proxy.server || activeProxy));
+      this.networkMode = 'proxy';
     } else {
       this.log.info('No proxy configured (direct egress)');
+      this.networkMode = 'direct';
     }
+    this.activeProxy = activeProxy || '';
     this.context = await chromium.launchPersistentContext(profileDir, launchOpts);
     await this.context.addInitScript(STEALTH_INIT);
 
@@ -167,14 +186,19 @@ class BrowserManager {
     return page.screenshot({ type: 'jpeg', quality: opts.quality || 70, fullPage: !!opts.fullPage });
   }
   async _safeClose() {
+    this.log.info('Closing browser context (profile directory preserved)');
     try {
       if (this.context) {
-        const pages = this.context.pages();
-        for (let i = 1; i < pages.length; i++) await pages[i].close().catch(function () {});
+        await this.context.close().catch((e) => this.log.warn('context.close: ' + (e && e.message)));
       }
     } catch (e) {
       this.log.warn('safeClose: ' + e.message);
     }
+    this.context = null;
+    this.page = null;
+    this.browser = null;
+    this.activeProxy = null;
+    this.networkMode = null;
   }
   async shutdown() {
     this.log.info('Shutting down browser (profile preserved)');
@@ -318,6 +342,33 @@ class BrowserManager {
 }
 
 let instance = null;
+async probeChatgptReachable(page) {
+    page = page || this.page;
+    if (!page) return { ok: false, reason: 'no_page' };
+    try {
+      const resp = await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      const url = page.url();
+      const title = await page.title().catch(() => '');
+      const status = resp ? resp.status() : 0;
+      this.lastConnectivity = { at: new Date().toISOString(), ok: true, url: url, title: title, status: status, mode: this.networkMode };
+      return { ok: true, url: url, title: title, status: status };
+    } catch (e) {
+      this.lastConnectivity = { at: new Date().toISOString(), ok: false, error: e.message, mode: this.networkMode };
+      return { ok: false, reason: e.message };
+    }
+  }
+
+  getNetworkInfo() {
+    const desired = (typeof getProxyServer === 'function' ? getProxyServer() : '') || '';
+    return {
+      networkMode: this.networkMode,
+      activeProxy: this.activeProxy || '',
+      desiredProxy: desired,
+      proxyChangedSinceLaunch: (this.activeProxy || '') !== (desired || ''),
+      lastConnectivity: this.lastConnectivity,
+    };
+  }
+
 function getBrowserManager(logger) {
   if (!instance) instance = new BrowserManager(logger);
   return instance;
