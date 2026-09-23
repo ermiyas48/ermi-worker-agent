@@ -145,39 +145,102 @@ function resolvePrompt(explicitId) {
   return selectPromptForCounter(nextCount);
 }
 
+function validateProxyUrl(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return { ok: true, server: '', reason: 'empty' };
+  const lower = value.toLowerCase();
+  if (/placeholder|your-host|example\.com|test-host|changeme|todo/i.test(value)) {
+    return { ok: false, server: '', reason: 'placeholder_or_example' };
+  }
+  let u;
+  try {
+    u = new URL(value);
+  } catch (e) {
+    return { ok: false, server: '', reason: 'invalid_url' };
+  }
+  const proto = (u.protocol || '').replace(':', '').toLowerCase();
+  if (!['socks5', 'socks5h', 'http', 'https'].includes(proto)) {
+    return { ok: false, server: '', reason: 'unsupported_protocol' };
+  }
+  const host = (u.hostname || '').trim();
+  if (!host || host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+    return { ok: false, server: '', reason: 'invalid_host' };
+  }
+  // Reject Pinggy SSH control host mistaken for public TCP endpoint
+  if (/^free\.pinggy\.io$/i.test(host) || /^tcp@/i.test(host) || host.includes(']')) {
+    return { ok: false, server: '', reason: 'invalid_pinggy_control_host' };
+  }
+  const port = parseInt(u.port, 10);
+  if (!port || port < 1 || port > 65535) {
+    return { ok: false, server: '', reason: 'invalid_port' };
+  }
+  // Normalize without credentials in stored form if present in userinfo only
+  const normalized = proto + '://' + host + ':' + port;
+  return { ok: true, server: normalized, reason: 'ok', host: host, port: port, protocol: proto };
+}
+
 function getProxyServer() {
   try {
     if (fs.existsSync(config.runtimeProxyPath)) {
       const data = JSON.parse(fs.readFileSync(config.runtimeProxyPath, 'utf8'));
-      if (data && data.server && String(data.server).trim()) {
-        return String(data.server).trim();
+      if (data && data.server) {
+        const v = validateProxyUrl(data.server);
+        if (v.ok && v.server) return v.server;
       }
     }
   } catch (e) {}
-  return config.proxyServer || '';
+  const envV = validateProxyUrl(config.proxyServer || '');
+  return envV.ok && envV.server ? envV.server : '';
 }
 
 function setRuntimeProxy(server) {
-  const value = String(server || '').trim();
+  const v = validateProxyUrl(server);
+  if (!v.ok) {
+    const err = new Error('invalid_proxy:' + v.reason);
+    err.code = 'INVALID_PROXY';
+    err.reason = v.reason;
+    throw err;
+  }
   fs.mkdirSync(config.dataPath, { recursive: true });
-  if (!value) {
+  if (!v.server) {
     try {
       if (fs.existsSync(config.runtimeProxyPath)) fs.unlinkSync(config.runtimeProxyPath);
     } catch (e) {}
-    return { server: '', cleared: true };
+    return { server: '', cleared: true, valid: true, updatedAt: new Date().toISOString() };
   }
-  const payload = { server: value, updatedAt: new Date().toISOString() };
+  const payload = {
+    server: v.server,
+    updatedAt: new Date().toISOString(),
+    host: v.host,
+    port: v.port,
+    protocol: v.protocol,
+  };
   fs.writeFileSync(config.runtimeProxyPath, JSON.stringify(payload, null, 2));
-  return payload;
+  return Object.assign({ valid: true, cleared: false }, payload);
 }
 
 function getRuntimeProxyInfo() {
   try {
     if (fs.existsSync(config.runtimeProxyPath)) {
-      return JSON.parse(fs.readFileSync(config.runtimeProxyPath, 'utf8'));
+      const data = JSON.parse(fs.readFileSync(config.runtimeProxyPath, 'utf8'));
+      const v = validateProxyUrl(data.server || '');
+      return {
+        server: v.ok ? v.server : '',
+        updatedAt: data.updatedAt || null,
+        valid: v.ok && !!v.server,
+        reason: v.reason,
+        source: 'runtime',
+      };
     }
   } catch (e) {}
-  return { server: config.proxyServer || '', updatedAt: null, source: config.proxyServer ? 'env' : 'none' };
+  const envV = validateProxyUrl(config.proxyServer || '');
+  return {
+    server: envV.ok ? envV.server : '',
+    updatedAt: null,
+    valid: envV.ok && !!envV.server,
+    reason: envV.reason,
+    source: config.proxyServer ? 'env' : 'none',
+  };
 }
 
 module.exports = {
@@ -193,6 +256,7 @@ module.exports = {
   incrementRunCounter,
   selectPromptForCounter,
   resolvePrompt,
+  validateProxyUrl,
   getProxyServer,
   setRuntimeProxy,
   getRuntimeProxyInfo,
