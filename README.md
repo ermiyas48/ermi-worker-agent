@@ -75,3 +75,5 @@ npm install
 npx playwright install chromium
 OWNER_TOKEN=your-long-secret npm start
 ```
+
+<!-- rebuild trigger 2026-09-23 runtime-proxy -->
