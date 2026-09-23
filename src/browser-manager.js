@@ -339,10 +339,8 @@ class BrowserManager {
     this.log.info('Imported ' + normalized.length + ' cookies');
     return { count: normalized.length };
   }
-}
 
-let instance = null;
-async probeChatgptReachable(page) {
+  async probeChatgptReachable(page) {
     page = page || this.page;
     if (!page) return { ok: false, reason: 'no_page' };
     try {
@@ -368,7 +366,9 @@ async probeChatgptReachable(page) {
       lastConnectivity: this.lastConnectivity,
     };
   }
+}
 
+let instance = null;
 function getBrowserManager(logger) {
   if (!instance) instance = new BrowserManager(logger);
   return instance;
