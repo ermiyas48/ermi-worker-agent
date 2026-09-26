@@ -4,7 +4,9 @@ const helmet = require('helmet');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-const { config, isSetupComplete } = require('./config');
+const {
+  config, isSetupComplete, getProxyServer, setProxyServer, clearProxyServer, loadProxyState, isValidProxyServer,
+} = require('./config');
 const logger = require('./logger');
 const { getRunExecutor } = require('./run-executor');
 const { getSetupController } = require('./setup-controller');
@@ -37,15 +39,33 @@ function requireOwner(req, res, next) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime(), setupComplete: isSetupComplete(), timestamp: new Date().toISOString() });
+  const px = loadProxyState();
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    setupComplete: isSetupComplete(),
+    proxyValid: !!(px && px.valid && px.server),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.get('/status', (req, res) => {
   const st = executor.getStatus();
+  const px = loadProxyState();
+  const bm = getBrowserManager(logger);
   res.json({
     state: st.state, label: st.label || HUMAN_LABELS[st.state], runId: st.id || null,
     locked: st.locked, setupComplete: st.setupComplete, error: st.error || null,
     message: st.message || null, startedAt: st.startedAt || null, finishedAt: st.finishedAt || null,
+    network: {
+      desiredProxyValid: !!(px && px.valid),
+      desiredProxySet: !!(px && px.server),
+      activeBrowserProxySet: !!bm.activeProxy,
+      proxyChangedSinceLaunch: (px && px.server || null) !== (bm.activeProxy || null),
+      lastProxyUpdate: px && px.updatedAt || null,
+      proxySource: px && px.source || null,
+      server: px && px.valid ? px.server : null,
+    },
   });
 });
 
@@ -58,6 +78,40 @@ app.post('/run', controlLimiter, requireOwner, async (req, res) => {
 
 app.get('/run/status', controlLimiter, requireOwner, (req, res) => {
   res.json(executor.getStatus());
+});
+
+app.get('/proxy', requireOwner, (req, res) => {
+  const px = loadProxyState();
+  res.json({
+    ok: true,
+    valid: !!(px && px.valid && isValidProxyServer(px.server)),
+    server: px && px.valid ? px.server : null,
+    updatedAt: px && px.updatedAt || null,
+    source: px && px.source || null,
+  });
+});
+
+app.post('/proxy', controlLimiter, requireOwner, (req, res) => {
+  const body = req.body || {};
+  let server = body.server || body.proxy || body.endpoint || null;
+  if (server && typeof server === 'string' && !/^socks5/i.test(server) && server.includes(':')) {
+    server = 'socks5://' + server.replace(/^\/\//, '');
+  }
+  if (body.clear === true || server === null || server === '') {
+    clearProxyServer();
+    logger.info('Proxy cleared');
+    return res.json({ ok: true, valid: false, server: null, message: 'Proxy cleared' });
+  }
+  const result = setProxyServer(server, body.source || 'termugpt');
+  if (!result.ok) return res.status(400).json(result);
+  logger.info('Proxy updated');
+  res.json({
+    ok: true,
+    valid: true,
+    server: result.server,
+    updatedAt: result.updatedAt,
+    message: 'Proxy accepted. Browser will use it on next launch.',
+  });
 });
 
 app.post('/setup/browser', controlLimiter, requireOwner, async (req, res) => {
@@ -125,4 +179,6 @@ app.listen(config.port, '0.0.0.0', () => {
   logger.info('ERMI Worker listening on :' + config.port);
   logger.info('Setup complete: ' + isSetupComplete());
   logger.info('Profile: ' + config.profilePath);
+  const px = getProxyServer();
+  logger.info('Proxy: ' + (px || 'none'));
 });
