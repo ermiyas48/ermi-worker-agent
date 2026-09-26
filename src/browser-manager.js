@@ -1,41 +1,7 @@
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
-const { config, getProxyServer } = require('./config');
-
-const STEALTH_INIT = `
-(() => {
-  try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (e) {}
-  try { window.chrome = window.chrome || { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} }; } catch (e) {}
-  try {
-    const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
-    if (originalQuery) {
-      window.navigator.permissions.query = (parameters) =>
-        parameters && parameters.name === 'notifications'
-          ? Promise.resolve({ state: Notification.permission })
-          : originalQuery(parameters);
-    }
-  } catch (e) {}
-  try {
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => [
-        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
-      ],
-    });
-  } catch (e) {}
-  try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (e) {}
-  try {
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function (param) {
-      if (param === 37445) return 'Intel Inc.';
-      if (param === 37446) return 'Intel Iris OpenGL Engine';
-      return getParameter.call(this, param);
-    };
-  } catch (e) {}
-})();
-`;
+const { config } = require('./config');
 
 class BrowserManager {
   constructor(logger) {
@@ -46,328 +12,127 @@ class BrowserManager {
     this.lock = false;
     this.lockOwner = null;
     this.launchPromise = null;
-    this.activeProxy = null; // proxy string used at last successful launch, or ''
-    this.networkMode = null; // 'proxy' | 'direct'
-    this.lastConnectivity = null;
   }
   isLocked() { return this.lock; }
   acquireLock(runId) {
     if (this.lock) return false;
     this.lock = true;
     this.lockOwner = runId;
-    this.log.info('Lock acquired by ' + runId);
+    this.log.info(`Lock acquired by ${runId}`);
     return true;
   }
   releaseLock(runId) {
     if (this.lockOwner && this.lockOwner !== runId) {
-      this.log.warn('Lock release ignored: owner=' + this.lockOwner + ' requester=' + runId);
+      this.log.warn(`Lock release ignored: owner=${this.lockOwner} requester=${runId}`);
       return false;
     }
     this.lock = false;
     this.lockOwner = null;
-    this.log.info('Lock released by ' + runId);
+    this.log.info(`Lock released by ${runId}`);
     return true;
   }
-  async ensureBrowser(opts) {
-    opts = opts || {};
-    let desiredProxy = '';
-    if (opts.forceDirect) { desiredProxy = ''; }
-    else if (opts.desiredProxy !== undefined) { desiredProxy = opts.desiredProxy || ''; }
-    else { desiredProxy = ((typeof getProxyServer === 'function' ? getProxyServer() : '') || ''); }
-    const desiredMode = desiredProxy ? 'proxy' : 'direct';
+  async ensureBrowser(opts = {}) {
     if (this.context && this.page && !this.page.isClosed()) {
-      const proxyChanged = (this.activeProxy || '') !== (desiredProxy || '');
-      if (proxyChanged && !opts.ignoreProxyChange) {
-        this.log.info('Proxy changed (was=' + (this.activeProxy || '(none)') + ' now=' + (desiredProxy || '(none)') + ') — recreating context');
+      try {
+        await this.page.evaluate(() => true);
+        return { browser: this.browser, context: this.context, page: this.page };
+      } catch (e) {
+        this.log.warn('Existing page unhealthy, restarting: ' + e.message);
         await this._safeClose();
-      } else {
-        try {
-          await this.page.evaluate(() => true);
-          return { browser: this.browser, context: this.context, page: this.page, networkMode: this.networkMode, activeProxy: this.activeProxy };
-        } catch (e) {
-          this.log.warn('Existing page unhealthy, restarting: ' + e.message);
-          await this._safeClose();
-        }
       }
     }
     if (this.launchPromise) return this.launchPromise;
-    this.launchPromise = this._launch(Object.assign({}, opts, { desiredProxy: desiredProxy, desiredMode: desiredMode }));
+    this.launchPromise = this._launch(opts);
     try { return await this.launchPromise; }
     finally { this.launchPromise = null; }
   }
-  async _launch(opts) {
-    opts = opts || {};
+  async _launch(opts = {}) {
     const headless = opts.headless !== undefined ? opts.headless : config.headless;
     const profileDir = config.profilePath;
     fs.mkdirSync(profileDir, { recursive: true });
-    this.log.info('Launching Chromium profile=' + profileDir + ' headless=' + headless);
+    this.log.info(`Launching Chromium (no proxy) profile=${profileDir} headless=${headless}`);
+
+    const args = [
+      '--disable-blink-features=AutomationControlled',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-infobars',
+      '--window-size=1280,900',
+      '--lang=en-US',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--force-color-profile=srgb',
+      '--single-process',
+    ];
 
     const launchOpts = {
-      headless: headless,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-infobars',
-        '--window-size=1280,900',
-        '--lang=en-US',
-        '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--force-color-profile=srgb',
-      ],
-      ignoreDefaultArgs: ['--enable-automation'],
+      headless: headless === false ? false : true,
+      args,
       viewport: { width: 1280, height: 900 },
-      locale: 'en-US',
-      timezoneId: 'America/New_York',
-      colorScheme: 'light',
-      deviceScaleFactor: 1,
-      hasTouch: false,
-      isMobile: false,
-      javaScriptEnabled: true,
+      ignoreDefaultArgs: ['--enable-automation'],
       acceptDownloads: false,
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      extraHTTPHeaders: {
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
+      proxy: undefined,
     };
-    const activeProxy = opts.desiredProxy !== undefined
-      ? (opts.desiredProxy || '')
-      : ((typeof getProxyServer === 'function' ? getProxyServer() : config.proxyServer) || '');
-    if (activeProxy) {
-      const proxy = { server: activeProxy };
-      try {
-        const u = new URL(activeProxy);
-        if (u.username) {
-          proxy.server = u.protocol + '//' + u.host;
-          proxy.username = decodeURIComponent(u.username);
-          proxy.password = decodeURIComponent(u.password || '');
-        }
-      } catch (_) {}
-      launchOpts.proxy = proxy;
-      this.log.info('Using proxy ' + (launchOpts.proxy.server || activeProxy));
-      this.networkMode = 'proxy';
-    } else {
-      this.log.info('No proxy configured (direct egress)');
-      this.networkMode = 'direct';
+
+    try {
+      this.context = await chromium.launchPersistentContext(profileDir, launchOpts);
+    } catch (err) {
+      this.log.error('Primary launch failed: ' + err.message);
+      const args2 = args.filter((a) => a !== '--single-process');
+      this.log.info('Retrying Chromium launch without --single-process');
+      this.context = await chromium.launchPersistentContext(profileDir, {
+        ...launchOpts,
+        args: args2,
+      });
     }
-    this.activeProxy = activeProxy || '';
-    this.context = await chromium.launchPersistentContext(profileDir, launchOpts);
-    await this.context.addInitScript(STEALTH_INIT);
 
     const pages = this.context.pages();
     this.page = pages.length > 0 ? pages[0] : await this.context.newPage();
-
     await this.page.route('**/*', (route) => {
       const url = route.request().url();
-      if (/doubleclick|google-analytics|googletagmanager|facebook\.net|adservice|hotjar|segment\.io/i.test(url)) {
+      if (
+        url.includes('chatgpt.com') || url.includes('openai.com') ||
+        url.includes('oaistatic.com') || url.includes('notion.com') ||
+        url.includes('notion.so') || url.includes('googleapis.com') ||
+        url.includes('gstatic.com') || url.includes('cloudflare') ||
+        url.startsWith('data:') || url.startsWith('blob:')
+      ) return route.continue();
+      if (url.includes('doubleclick') || url.includes('google-analytics') || url.includes('facebook'))
         return route.abort();
-      }
       return route.continue();
     });
-
     this.browser = this.context.browser();
-    this.log.info('Chromium ready (stealth init applied)');
+    this.log.info('Chromium ready (direct, no proxy)');
     return { browser: this.browser, context: this.context, page: this.page };
   }
   async getPage() {
-    const result = await this.ensureBrowser();
-    return result.page;
-  }
-  async screenshot(opts) {
-    opts = opts || {};
-    const page = await this.getPage();
-    return page.screenshot({ type: 'jpeg', quality: opts.quality || 70, fullPage: !!opts.fullPage });
+    const { page } = await this.ensureBrowser();
+    return page;
   }
   async _safeClose() {
-    this.log.info('Closing browser context (profile directory preserved)');
     try {
       if (this.context) {
-        await this.context.close().catch((e) => this.log.warn('context.close: ' + (e && e.message)));
+        const pages = this.context.pages();
+        for (let i = 1; i < pages.length; i++) await pages[i].close().catch(() => {});
       }
-    } catch (e) {
-      this.log.warn('safeClose: ' + e.message);
-    }
-    this.context = null;
-    this.page = null;
-    this.browser = null;
-    this.activeProxy = null;
-    this.networkMode = null;
+    } catch (e) { this.log.warn('safeClose: ' + e.message); }
   }
   async shutdown() {
     this.log.info('Shutting down browser (profile preserved)');
-    try { if (this.context) await this.context.close().catch(function () {}); } catch (e) {}
-    this.context = null;
-    this.page = null;
-    this.browser = null;
-    this.lock = false;
-    this.lockOwner = null;
+    try { if (this.context) await this.context.close().catch(() => {}); } catch {}
+    this.context = null; this.page = null; this.browser = null;
+    this.lock = false; this.lockOwner = null;
   }
   async launchForSetup() {
-    return this.ensureBrowser({ headless: config.headless });
-  }
-
-  async detectCloudflareChallenge(page) {
-    page = page || this.page;
-    if (!page) return { challenge: false };
-    try {
-      return await page.evaluate(() => {
-        const title = (document.title || '').toLowerCase();
-        const body = (document.body && document.body.innerText) || '';
-        const html = document.documentElement ? document.documentElement.innerHTML : '';
-        const challengeTitle = /just a moment|attention required|verif(y|ying).{0,20}human|checking your browser|security check/i.test(title);
-        const challengeBody = /verif(y|ying).{0,30}(you.?re|that you are).{0,10}human|checking your browser before you proceed|enable javascript and cookies|cf-turnstile|challenge-platform|challenges\.cloudflare/i.test(body + ' ' + html.slice(0, 8000));
-        const hasTurnstile = !!document.querySelector('iframe[src*="challenges.cloudflare"], iframe[src*="turnstile"], .cf-turnstile, [name="cf-turnstile-response"]');
-        return { challenge: challengeTitle || challengeBody || hasTurnstile, hasTurnstile, title: document.title, url: location.href };
-      });
-    } catch (e) {
-      return { challenge: false, error: e.message };
-    }
-  }
-
-  async tryClickTurnstile(page) {
-    page = page || this.page;
-    if (!page) return false;
-    try {
-      const frames = page.frames();
-      for (let i = 0; i < frames.length; i++) {
-        const f = frames[i];
-        const fu = f.url() || '';
-        if (!/challenges\.cloudflare|turnstile/i.test(fu)) continue;
-        try {
-          const box = await f.locator('input[type="checkbox"], #challenge-stage, .cb-lb, body').first().boundingBox({ timeout: 2000 }).catch(() => null);
-          if (box) {
-            const x = box.x + box.width * 0.35;
-            const y = box.y + box.height * 0.5;
-            await page.mouse.move(x - 40, y - 20, { steps: 8 });
-            await page.waitForTimeout(120 + Math.floor(Math.random() * 180));
-            await page.mouse.move(x, y, { steps: 12 });
-            await page.waitForTimeout(80 + Math.floor(Math.random() * 120));
-            await page.mouse.click(x, y, { delay: 40 + Math.floor(Math.random() * 60) });
-            this.log.info('Turnstile click attempted in frame');
-            return true;
-          }
-        } catch (_) {}
-      }
-      const handle = await page.$('.cf-turnstile, [data-sitekey], iframe[src*="challenges.cloudflare"]');
-      if (handle) {
-        const box = await handle.boundingBox();
-        if (box) {
-          const x = box.x + Math.min(30, box.width * 0.25);
-          const y = box.y + box.height / 2;
-          await page.mouse.move(x, y, { steps: 10 });
-          await page.waitForTimeout(100);
-          await page.mouse.click(x, y, { delay: 50 });
-          this.log.info('Turnstile click attempted on container');
-          return true;
-        }
-      }
-    } catch (e) {
-      this.log.warn('tryClickTurnstile: ' + e.message);
-    }
-    return false;
-  }
-
-  async waitOutCloudflare(page, opts) {
-    opts = opts || {};
-    const timeout = opts.timeout || 90000;
-    const autoClick = opts.autoClick !== false;
-    page = page || this.page;
-    const start = Date.now();
-    let clicked = false;
-    let reloaded = false;
-    while (Date.now() - start < timeout) {
-      const info = await this.detectCloudflareChallenge(page);
-      if (!info.challenge) {
-        this.log.info('Cloudflare challenge cleared');
-        return { ok: true, cleared: true };
-      }
-      const title = (info.title || '').toLowerCase();
-      const isManaged = /just a moment|checking your browser|attention required/i.test(title);
-      if (autoClick && info.hasTurnstile && !clicked) {
-        clicked = await this.tryClickTurnstile(page);
-      }
-      if (isManaged && !reloaded && Date.now() - start > 25000) {
-        reloaded = true;
-        this.log.info('Cloudflare still present – soft reload');
-        try {
-          await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 });
-        } catch (e) {
-          this.log.warn('reload: ' + e.message);
-        }
-      }
-      await page.waitForTimeout(2000 + Math.floor(Math.random() * 1500));
-    }
-    return { ok: false, cleared: false, message: 'Cloudflare challenge still present after timeout' };
-  }
-
-  async importCookies(cookies) {
-    if (!Array.isArray(cookies) || cookies.length === 0) {
-      throw new Error('cookies must be a non-empty array');
-    }
-    await this.ensureBrowser();
-    const normalized = cookies.map(function (raw) {
-      const c = Object.assign({}, raw);
-      if (!c.path) c.path = '/';
-      if (c.expirationDate && !c.expires) c.expires = Math.floor(c.expirationDate);
-      if (typeof c.expires === 'number' && c.expires > 1e12) c.expires = Math.floor(c.expires / 1000);
-      if (c.sameSite === 'no_restriction' || c.sameSite === 'None') c.sameSite = 'None';
-      if (c.sameSite === 'lax' || c.sameSite === 'Lax') c.sameSite = 'Lax';
-      if (c.sameSite === 'strict' || c.sameSite === 'Strict') c.sameSite = 'Strict';
-      delete c.expirationDate;
-      delete c.storeId;
-      delete c.hostOnly;
-      delete c.session;
-      delete c.id;
-      delete c.firstPartyDomain;
-      delete c.partitionKey;
-      return c;
-    }).filter(function (c) {
-      return c.name && c.value != null && c.domain;
-    });
-    if (normalized.length === 0) throw new Error('No valid cookies after normalization');
-    try {
-      await this.page.goto('https://chatgpt.com/robots.txt', { waitUntil: 'commit', timeout: 30000 });
-    } catch (_) {}
-    await this.context.addCookies(normalized);
-    this.log.info('Imported ' + normalized.length + ' cookies');
-    return { count: normalized.length };
-  }
-
-  async probeChatgptReachable(page) {
-    page = page || this.page;
-    if (!page) return { ok: false, reason: 'no_page' };
-    try {
-      const resp = await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      const url = page.url();
-      const title = await page.title().catch(() => '');
-      const status = resp ? resp.status() : 0;
-      this.lastConnectivity = { at: new Date().toISOString(), ok: true, url: url, title: title, status: status, mode: this.networkMode };
-      return { ok: true, url: url, title: title, status: status };
-    } catch (e) {
-      this.lastConnectivity = { at: new Date().toISOString(), ok: false, error: e.message, mode: this.networkMode };
-      return { ok: false, reason: e.message };
-    }
-  }
-
-  getNetworkInfo() {
-    const desired = (typeof getProxyServer === 'function' ? getProxyServer() : '') || '';
-    return {
-      networkMode: this.networkMode,
-      activeProxy: this.activeProxy || '',
-      desiredProxy: desired,
-      proxyChangedSinceLaunch: (this.activeProxy || '') !== (desired || ''),
-      lastConnectivity: this.lastConnectivity,
-    };
+    return this.ensureBrowser({ headless: true });
   }
 }
-
 let instance = null;
 function getBrowserManager(logger) {
   if (!instance) instance = new BrowserManager(logger);
