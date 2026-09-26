@@ -1,266 +1,108 @@
 'use strict';
 const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const { config, isSetupComplete, getRunCounter, getProxyServer, setRuntimeProxy, getRuntimeProxyInfo, validateProxyUrl } = require('./config');
-const log = require('./logger');
-const { getBrowserManager } = require('./browser-manager');
-const { getSetupController } = require('./setup-controller');
+const path = require('path');
+const { config, isSetupComplete } = require('./config');
+const logger = require('./logger');
 const { getRunExecutor } = require('./run-executor');
+const { getSetupController } = require('./setup-controller');
+const { getBrowserManager } = require('./browser-manager');
+const { HUMAN_LABELS } = require('./states');
 
 const app = express();
-app.set('trust proxy', 1);
-app.use(express.json({ limit: '2mb' }));
+const executor = getRunExecutor(logger);
+const setup = getSetupController(logger);
+
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors({ origin: false }));
+app.use(express.json({ limit: '32kb' }));
+app.use(express.static(path.join(__dirname, '..', 'public')));
+
+const controlLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
 
 function requireOwner(req, res, next) {
-  if (!config.ownerToken) {
-    return res.status(503).json({ error: 'OWNER_TOKEN not configured' });
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : (req.query.token || (req.body && req.body.token) || '');
+  if (!config.ownerToken || config.ownerToken.length < 16) {
+    logger.error('OWNER_TOKEN not configured');
+    return res.status(503).json({ error: 'Server misconfigured: OWNER_TOKEN required' });
   }
-  const auth = req.headers.authorization || '';
-  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  const headerTok = req.headers['x-owner-token'] || '';
-  const queryTok = (req.query && req.query.token) || '';
-  const token = bearer || headerTok || queryTok;
   if (token !== config.ownerToken) {
+    logger.warn('Unauthorized', { ip: req.ip, path: req.path });
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  return next();
+  next();
 }
 
-const controlLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests' },
-});
-
-const setup = getSetupController(log);
-const executor = getRunExecutor(log);
-const bm = getBrowserManager(log);
-
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    uptime: process.uptime(),
-    setupComplete: isSetupComplete(),
-    runCounter: getRunCounter(),
-    timestamp: new Date().toISOString(),
-  });
+  res.json({ status: 'ok', uptime: process.uptime(), setupComplete: isSetupComplete(), timestamp: new Date().toISOString() });
 });
 
 app.get('/status', (req, res) => {
-  const run = executor.getStatus();
-  const info = getRuntimeProxyInfo();
-  const net = typeof bm.getNetworkInfo === 'function' ? bm.getNetworkInfo() : {};
+  const st = executor.getStatus();
   res.json({
-    setupComplete: isSetupComplete(),
-    run,
-    browserLocked: bm.isLocked(),
-    network: {
-      mode: net.networkMode || null,
-      desiredProxyValid: !!info.valid,
-      desiredProxySet: !!info.server,
-      activeBrowserProxySet: !!(net.activeProxy),
-      proxyChangedSinceLaunch: !!net.proxyChangedSinceLaunch,
-      lastConnectivity: net.lastConnectivity || null,
-      lastProxyUpdate: info.updatedAt || null,
-      proxySource: info.source || 'none',
-    },
+    state: st.state, label: st.label || HUMAN_LABELS[st.state], runId: st.id || null,
+    locked: st.locked, setupComplete: st.setupComplete, error: st.error || null,
+    message: st.message || null, startedAt: st.startedAt || null, finishedAt: st.finishedAt || null,
   });
 });
 
-async function handleRun(req, res) {
-  try {
-    const body = req.method === 'POST' ? req.body || {} : {};
-    const promptId = body.promptId || req.query.promptId || 'worker';
-    const result = await executor.startRun({ promptId });
-    const code = result.ok ? 202 : result.state === 'LOCKED' || result.status === 'running' ? 409 : 400;
-    return res.status(code).json(result);
-  } catch (e) {
-    log.error('run error: ' + e.message);
-    return res.status(500).json({ ok: false, error: e.message, status: 'error' });
-  }
-}
-
-app.get('/run', controlLimiter, requireOwner, handleRun);
-app.post('/run', controlLimiter, requireOwner, handleRun);
-
-app.get('/proxy', controlLimiter, requireOwner, (req, res) => {
-  const info = getRuntimeProxyInfo();
-  const net = typeof bm.getNetworkInfo === 'function' ? bm.getNetworkInfo() : {};
-  res.json({
-    ok: true,
-    valid: !!info.valid,
-    server: info.server || '',
-    updatedAt: info.updatedAt || null,
-    source: info.source || 'none',
-    reason: info.reason || null,
-    browserReloadRequired: !!(net.proxyChangedSinceLaunch),
-    activeBrowserProxy: net.activeProxy || '',
-    networkMode: net.networkMode || null,
-  });
+app.post('/run', controlLimiter, requireOwner, async (req, res) => {
+  logger.info('POST /run');
+  const result = await executor.startRun();
+  if (!result.ok) return res.status(result.error && result.error.includes('progress') ? 409 : 400).json(result);
+  res.status(202).json(result);
 });
-
-app.post('/proxy', controlLimiter, requireOwner, (req, res) => {
-  try {
-    const server = (req.body && (req.body.server || req.body.proxy || req.body.PROXY_SERVER)) || '';
-    // Allow explicit clear with empty string
-    if (server === '' || server === null) {
-      const result = setRuntimeProxy('');
-      log.info('Runtime proxy cleared');
-      return res.json({ ok: true, valid: true, cleared: true, server: '', updatedAt: result.updatedAt });
-    }
-    const checked = validateProxyUrl(server);
-    if (!checked.ok || !checked.server) {
-      log.warn('Rejected invalid proxy: ' + (checked.reason || 'unknown'));
-      return res.status(400).json({ ok: false, error: 'invalid_proxy', reason: checked.reason || 'invalid' });
-    }
-    const result = setRuntimeProxy(checked.server);
-    log.info('Runtime proxy updated');
-    return res.json({ ok: true, valid: true, server: result.server, updatedAt: result.updatedAt });
-  } catch (e) {
-    if (e && e.code === 'INVALID_PROXY') {
-      return res.status(400).json({ ok: false, error: 'invalid_proxy', reason: e.reason || e.message });
-    }
-    return res.status(500).json({ ok: false, error: 'internal' });
-  }
-});
-
-
 
 app.get('/run/status', controlLimiter, requireOwner, (req, res) => {
   res.json(executor.getStatus());
 });
 
-app.post('/setup/start', controlLimiter, requireOwner, async (req, res) => {
-  try {
-    const result = await setup.startSetupBrowser();
-    return res.json(result);
-  } catch (e) {
-    log.error('setup/start: ' + e.message);
-    return res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
 app.post('/setup/browser', controlLimiter, requireOwner, async (req, res) => {
-  try {
-    const result = await setup.startSetupBrowser();
-    return res.json(result);
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message });
-  }
+  if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete. Setup route is disabled.' });
+  const result = await setup.startSetupBrowser();
+  res.status(result.ok ? 200 : 500).json(result);
 });
 
 app.get('/setup/status', controlLimiter, requireOwner, async (req, res) => {
-  try {
-    if (req.query.detect === '1') {
-      const detected = await setup.detectAuthentication();
-      return res.json(Object.assign({}, setup.getStatus(), detected));
-    }
-    return res.json(setup.getStatus());
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
+  if (req.query.detect === '1' && !isSetupComplete()) {
+    const det = await setup.detectAuthentication();
+    return res.json(Object.assign({}, setup.getStatus(), det));
   }
-});
-
-app.get('/setup/screenshot', controlLimiter, requireOwner, async (req, res) => {
-  try {
-    const buf = await setup.getScreenshot();
-    res.set('Content-Type', 'image/jpeg');
-    res.set('Cache-Control', 'no-store');
-    return res.send(buf);
-  } catch (e) {
-    if (String(e.message).includes('already complete')) {
-      return res.status(403).json({ error: e.message });
-    }
-    return res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/setup/import-cookies', controlLimiter, requireOwner, async (req, res) => {
-  try {
-    const body = req.body || {};
-    let cookies = body.cookies;
-    if (typeof cookies === 'string') {
-      try { cookies = JSON.parse(cookies); } catch (e) {
-        return res.status(400).json({ ok: false, error: 'cookies must be JSON array' });
-      }
-    }
-    if (!Array.isArray(cookies)) {
-      return res.status(400).json({ ok: false, error: 'Body must include cookies: [...]' });
-    }
-    const result = await setup.importSessionCookies(cookies);
-    return res.json(result);
-  } catch (e) {
-    log.error('import-cookies: ' + e.message);
-    return res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-app.post('/setup/action', controlLimiter, requireOwner, async (req, res) => {
-  try {
-    const result = await setup.performAction(req.body || {});
-    return res.json(result);
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message });
-  }
+  res.json(setup.getStatus());
 });
 
 app.get('/setup', (req, res) => {
-  try {
-    const html = setup.getSetupPageHtml();
-    res.set('Content-Type', 'text/html; charset=utf-8');
-    res.set('Cache-Control', 'no-store');
-    return res.send(html);
-  } catch (e) {
-    return res.status(500).send('Setup page unavailable');
-  }
+  if (isSetupComplete()) return res.status(403).send('Setup already complete. This route is disabled.');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(setup.getSetupPageHtml());
 });
 
 app.get('/', (req, res) => {
-  res.json({
-    service: 'ermi-worker-agent',
-    setupComplete: isSetupComplete(),
-    health: '/health',
-    setup: '/setup',
-    run: '/run',
-  });
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
 app.use((err, req, res, next) => {
-  log.error('Unhandled: ' + (err && err.stack));
-  res.status(500).json({ error: 'Internal error' });
+  logger.error('Express error: ' + err.message);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
-const server = app.listen(config.port, '0.0.0.0', () => {
-  log.info('Listening on ' + config.port + ' setupComplete=' + isSetupComplete());
-  log.info('Active proxy: ' + (getProxyServer() || '(none)'));
-  const every = config.runEverySeconds || 0;
-  if (every > 0) {
-    log.info('Auto-run every ' + every + 's');
-    setInterval(async () => {
-      try {
-        const st = executor.getStatus();
-        if (st && st.locked) {
-          log.info('Auto-run skip: locked');
-          return;
-        }
-        log.info('Auto-run tick');
-        await executor.startRun({});
-      } catch (e) {
-        log.error('Auto-run error: ' + e.message);
-      }
-    }, every * 1000);
-  }
-});
-
-async function shutdown() {
-  log.info('Shutting down…');
-  try { await bm.shutdown(); } catch (e) {}
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 5000);
+async function shutdown(signal) {
+  logger.info('Received ' + signal);
+  await getBrowserManager(logger).shutdown();
+  process.exit(0);
 }
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
-module.exports = { app };
+if (!config.ownerToken || config.ownerToken.length < 16) {
+  logger.warn('WARNING: OWNER_TOKEN missing or weak');
+}
+
+app.listen(config.port, '0.0.0.0', () => {
+  logger.info('ERMI Worker listening on :' + config.port);
+  logger.info('Setup complete: ' + isSetupComplete());
+  logger.info('Profile: ' + config.profilePath);
+});
