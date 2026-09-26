@@ -97,7 +97,6 @@ ensure_sshd() {
   grep -qf "$HOME/.ssh/id_ermi.pub" "$HOME/.ssh/authorized_keys" 2>/dev/null || \
     cat "$HOME/.ssh/id_ermi.pub" >> "$HOME/.ssh/authorized_keys"
   chmod 600 "$HOME/.ssh/authorized_keys" "$HOME/.ssh/id_ermi" 2>/dev/null || true
-
   cat >"$PREFIX/etc/ssh/sshd_config" << EOF
 Port $SSHD_PORT
 HostKey $PREFIX/etc/ssh/ssh_host_ed25519_key
@@ -108,7 +107,6 @@ AllowTcpForwarding yes
 PermitTunnel yes
 PidFile $BASE/pids/sshd.pid
 EOF
-
   if ! pgrep -f "$PREFIX/bin/sshd" >/dev/null 2>&1; then
     sshd 2>>"$BASE/logs/sshd.log" || true
     sleep 1
@@ -143,9 +141,7 @@ start_socks() {
   sleep 2
 }
 
-port_listening() {
-  (echo >/dev/tcp/127.0.0.1/$1) >/dev/null 2>&1
-}
+port_listening() { (echo >/dev/tcp/127.0.0.1/$1) >/dev/null 2>&1; }
 
 socks_exit_ip() {
   curl -4 -fsS --max-time 12 --proxy "socks5h://127.0.0.1:${SOCKS_PORT}" https://api.ipify.org 2>/dev/null
@@ -153,29 +149,20 @@ socks_exit_ip() {
 
 socks_ok() {
   port_listening "$SOCKS_PORT" || return 1
-  local ip
-  ip=$(socks_exit_ip) || return 1
+  local ip; ip=$(socks_exit_ip) || return 1
   [ -n "$ip" ] || return 1
   echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || return 1
   return 0
 }
 
 ensure_socks() {
-  if socks_ok; then
-    set_state "SOCKS_READY"
-    return 0
-  fi
+  if socks_ok; then set_state "SOCKS_READY"; return 0; fi
   log "SOCKS unhealthy — restarting local stack"
-  ensure_sshd
-  start_socks
+  ensure_sshd; start_socks
   local i=0
   while [ "$i" -lt 10 ]; do
     i=$((i + 1))
-    if socks_ok; then
-      log "SOCKS ok after restart"
-      set_state "SOCKS_READY"
-      return 0
-    fi
+    if socks_ok; then log "SOCKS ok after restart"; set_state "SOCKS_READY"; return 0; fi
     sleep 1
   done
   log "SOCKS still down after restart"
