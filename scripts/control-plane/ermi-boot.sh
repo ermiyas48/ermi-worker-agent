@@ -7,24 +7,29 @@ export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PATH="$PREFIX/bin:$HOME/bin:$PATH"
 BASE="$HOME/sim-exit"
 
-# 1. wake lock
 termux-wake-lock 2>/dev/null || true
-
-# 2. repair environment (minimal)
 mkdir -p "$BASE/logs" "$BASE/pids" "$BASE/health" "$HOME/bin" "$HOME/.ssh"
 
-# 3. start runtime
 RUNTIME="$BASE/ermi-runtime.sh"
 [ -x "$RUNTIME" ] || RUNTIME="$BASE/termugpt.sh"
 if [ -x "$RUNTIME" ]; then
-  nohup bash "$RUNTIME" >/dev/null 2>&1 &
+  if flock -n "$BASE/pids/runtime.lock" true 2>/dev/null; then
+    nohup bash "$RUNTIME" >/dev/null 2>&1 &
+  fi
 fi
 
-# 4. schedule watchdog if possible
-if command -v termux-job-scheduler >/dev/null 2>&1 && [ -x "$BASE/ermi-watchdog.sh" ]; then
-  termux-job-scheduler -s "$BASE/ermi-watchdog.sh" --period 900 --network any --battery-not-low false 2>/dev/null || true
+if command -v termux-job-scheduler >/dev/null 2>&1; then
+  if [ -x "$BASE/ermi-watchdog.sh" ]; then
+    termux-job-scheduler --script "$BASE/ermi-watchdog.sh" \
+      --job-id 17001 --period-ms 900000 \
+      --network any --battery-not-low false --persisted true 2>/dev/null || true
+  fi
+  if [ -x "$BASE/ermi-maintain.sh" ]; then
+    termux-job-scheduler --script "$BASE/ermi-maintain.sh" \
+      --job-id 17002 --period-ms 86400000 \
+      --network any --battery-not-low true --persisted true 2>/dev/null || true
+  fi
 fi
 
-# 5. leave a marker
 echo "$(date -Is) boot start" >>"$BASE/logs/boot.log"
 exit 0
