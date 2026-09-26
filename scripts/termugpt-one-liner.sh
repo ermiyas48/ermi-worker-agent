@@ -51,8 +51,14 @@ pkill -f "free.pinggy.io" 2>/dev/null || true
 sleep 2
 
 echo "[ermi] downloading supervisor v6..."
-curl -fsSL "https://raw.githubusercontent.com/ermiyas48/ermi-worker-agent/main/scripts/termugpt.sh" -o "$BASE/termugpt.sh"
+# Pin to known-good commit so GitHub CDN cannot serve stale v4
+curl -fsSL "https://raw.githubusercontent.com/ermiyas48/ermi-worker-agent/4368be7b5d89b14ce22c1f85b810ffdf29089d3f/scripts/termugpt.sh" -o "$BASE/termugpt.sh"
 chmod +x "$BASE/termugpt.sh"
+# sanity: must be v6
+if ! grep -q 'supervisor v6' "$BASE/termugpt.sh"; then
+  echo "[ermi] ERROR: downloaded script is not v6" >&2
+  exit 1
+fi
 
 cat >"$HOME/bin/termugpt" << 'WRAP'
 #!/data/data/com.termux/files/usr/bin/bash
