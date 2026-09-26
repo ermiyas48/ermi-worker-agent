@@ -104,12 +104,16 @@ start_pinggy() {
         if [ -n "$exit_ip" ] && echo "$exit_ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
           set_state "PUBLIC_ENDPOINT_VERIFIED" "$PUBLIC ip=$exit_ip"
           log "e2e OK exit_ip=$exit_ip"
+          echo "$PUBLIC" >"$BASE/last_public.txt"
+          date +%s >"$BASE/pids/tunnel_start.txt"
           if post_proxy "$PUBLIC"; then
             set_state "ACTIVE" "$PUBLIC"
+            health_set "railway_ok" "$(date +%s)"
             return 0
           else
-            log "e2e ok but Railway update failed — will retry"
-            echo "$PUBLIC" >"$BASE/last_public.txt"
+            log "e2e ok but Railway /proxy failed — DEGRADED, keep tunnel, retry later"
+            set_state "DEGRADED" "railway_pending $PUBLIC"
+            date +%s >"$BASE/pids/railway_retry.txt"
             return 0
           fi
         fi
@@ -169,12 +173,37 @@ while true; do
     set_state "RECOVERING" "tunnel"
     start_pinggy || true
   fi
-  if [ -f "$BASE/last_public.txt" ] && [ "$(cat "$STATE_FILE" 2>/dev/null)" = "ACTIVE" ]; then
+  st_now=$(cat "$STATE_FILE" 2>/dev/null || echo "")
+  if [ -f "$BASE/last_public.txt" ] && public_ok; then
     now=$(date +%s)
-    last=$(cat "$BASE/pids/last_repost.txt" 2>/dev/null || echo 0)
-    if [ $((now - last)) -ge 300 ]; then
-      hp=$(cat "$BASE/last_public.txt")
-      if public_ok; then post_proxy "$hp" || true; fi
+    hp=$(cat "$BASE/last_public.txt")
+    if [ "$st_now" = "ACTIVE" ]; then
+      last=$(cat "$BASE/pids/last_repost.txt" 2>/dev/null || echo 0)
+      if [ $((now - last)) -ge 300 ]; then
+        post_proxy "$hp" || true
+      fi
+    elif [ "$st_now" = "DEGRADED" ] || [ "$st_now" = "PUBLIC_ENDPOINT_VERIFIED" ] || [ "$st_now" = "RAILWAY_UPDATED" ]; then
+      last_try=$(cat "$BASE/pids/railway_retry.txt" 2>/dev/null || echo 0)
+      tries=$(cat "$BASE/pids/railway_tries.txt" 2>/dev/null || echo 0)
+      case "$tries" in
+        0) wait_s=30 ;;
+        1) wait_s=60 ;;
+        2) wait_s=120 ;;
+        *) wait_s=180 ;;
+      esac
+      if [ $((now - last_try)) -ge "$wait_s" ]; then
+        log "Railway retry try=$((tries+1)) wait was ${wait_s}s"
+        date +%s >"$BASE/pids/railway_retry.txt"
+        if post_proxy "$hp"; then
+          set_state "ACTIVE" "$hp"
+          echo 0 >"$BASE/pids/railway_tries.txt"
+          health_set "railway_ok" "$now"
+          log "Railway recovered — ACTIVE"
+        else
+          echo $((tries + 1)) >"$BASE/pids/railway_tries.txt"
+          set_state "DEGRADED" "railway_retry_fail"
+        fi
+      fi
     fi
   fi
   sleep 25
