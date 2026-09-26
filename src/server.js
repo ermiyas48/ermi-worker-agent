@@ -74,6 +74,18 @@ app.get('/setup/status', controlLimiter, requireOwner, async (req, res) => {
   res.json(setup.getStatus());
 });
 
+app.get('/setup/screenshot', controlLimiter, requireOwner, async (req, res) => {
+  try {
+    const { buffer, info } = await setup.takeScreenshot();
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('X-Page-Url', (info && info.url) || '');
+    res.setHeader('X-Page-Title', encodeURIComponent((info && info.title) || ''));
+    res.send(buffer);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/setup', (req, res) => {
   if (isSetupComplete()) return res.status(403).send('Setup already complete. This route is disabled.');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
