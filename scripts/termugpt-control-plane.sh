@@ -96,18 +96,29 @@ dl() {
     rm -f "$tmp"
     return 1
   fi
-  if ! head -1 "$tmp" | grep -q 'bash'; then
+  if ! head -1 "$tmp" | grep -qE 'bash|parse_public'; then
     rm -f "$tmp"
     return 1
   fi
   mv "$tmp" "$dest"
-  chmod 755 "$dest"
+  chmod 755 "$dest" 2>/dev/null || true
   echo "[ermi] wrote $(basename "$dest")"
   return 0
 }
 
-if ! dl "$CP/ermi-runtime.sh" "$BASE/ermi-runtime.sh"; then
-  echo "[ermi] FAIL: cannot download $CP/ermi-runtime.sh"
+if dl "$CP/ermi-runtime.sh" "$BASE/ermi-runtime.sh"; then
+  :
+elif dl "$CP/ermi-runtime.a.sh" "$BASE/ermi-runtime.a.sh" && dl "$CP/ermi-runtime.b.sh" "$BASE/ermi-runtime.b.sh"; then
+  cat "$BASE/ermi-runtime.a.sh" "$BASE/ermi-runtime.b.sh" > "$BASE/ermi-runtime.sh"
+  chmod 755 "$BASE/ermi-runtime.sh"
+  rm -f "$BASE/ermi-runtime.a.sh" "$BASE/ermi-runtime.b.sh"
+  echo "[ermi] assembled ermi-runtime.sh from a+b"
+else
+  echo "[ermi] FAIL: cannot download ermi-runtime.sh or a+b parts"
+  exit 1
+fi
+if ! grep -q 'post_proxy' "$BASE/ermi-runtime.sh" || ! grep -q 'ROTATE_SECS' "$BASE/ermi-runtime.sh"; then
+  echo "[ermi] FAIL: runtime missing required functions"
   exit 1
 fi
 ln -sf "$BASE/ermi-runtime.sh" "$BASE/termugpt.sh"
