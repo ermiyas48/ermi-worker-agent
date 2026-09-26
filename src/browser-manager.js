@@ -1,7 +1,7 @@
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
-const { config } = require('./config');
+const { config, getProxyServer } = require('./config');
 
 class BrowserManager {
   constructor(logger) {
@@ -12,6 +12,7 @@ class BrowserManager {
     this.lock = false;
     this.lockOwner = null;
     this.launchPromise = null;
+    this.activeProxy = null;
   }
   isLocked() { return this.lock; }
   acquireLock(runId) {
@@ -32,13 +33,21 @@ class BrowserManager {
     return true;
   }
   async ensureBrowser(opts = {}) {
+    const desired = getProxyServer();
     if (this.context && this.page && !this.page.isClosed()) {
-      try {
-        await this.page.evaluate(() => true);
-        return { browser: this.browser, context: this.context, page: this.page };
-      } catch (e) {
-        this.log.warn('Existing page unhealthy, restarting: ' + e.message);
+      if ((desired || null) !== (this.activeProxy || null)) {
+        this.log.info('Proxy changed since launch — restarting browser');
         await this._safeClose();
+        try { if (this.context) await this.context.close().catch(() => {}); } catch {}
+        this.context = null; this.page = null; this.browser = null;
+      } else {
+        try {
+          await this.page.evaluate(() => true);
+          return { browser: this.browser, context: this.context, page: this.page };
+        } catch (e) {
+          this.log.warn('Existing page unhealthy, restarting: ' + e.message);
+          await this._safeClose();
+        }
       }
     }
     if (this.launchPromise) return this.launchPromise;
@@ -50,24 +59,16 @@ class BrowserManager {
     const headless = opts.headless !== undefined ? opts.headless : config.headless;
     const profileDir = config.profilePath;
     fs.mkdirSync(profileDir, { recursive: true });
-    this.log.info(`Launching Chromium (no proxy) profile=${profileDir} headless=${headless}`);
+    const proxyServer = getProxyServer();
+    this.log.info(`Launching Chromium profile=${profileDir} headless=${headless} proxy=${proxyServer || 'none'}`);
 
     const args = [
       '--disable-blink-features=AutomationControlled',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-infobars',
-      '--window-size=1280,900',
-      '--lang=en-US',
+      '--no-first-run', '--no-default-browser-check',
+      '--disable-dev-shm-usage', '--disable-gpu',
+      '--no-sandbox', '--disable-setuid-sandbox',
+      '--disable-infobars', '--window-size=1280,900', '--lang=en-US',
       '--disable-features=IsolateOrigins,site-per-process',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-      '--force-color-profile=srgb',
       '--single-process',
     ];
 
@@ -77,19 +78,17 @@ class BrowserManager {
       viewport: { width: 1280, height: 900 },
       ignoreDefaultArgs: ['--enable-automation'],
       acceptDownloads: false,
-      proxy: undefined,
     };
+    if (proxyServer) {
+      launchOpts.proxy = { server: proxyServer };
+    }
 
     try {
       this.context = await chromium.launchPersistentContext(profileDir, launchOpts);
     } catch (err) {
       this.log.error('Primary launch failed: ' + err.message);
       const args2 = args.filter((a) => a !== '--single-process');
-      this.log.info('Retrying Chromium launch without --single-process');
-      this.context = await chromium.launchPersistentContext(profileDir, {
-        ...launchOpts,
-        args: args2,
-      });
+      this.context = await chromium.launchPersistentContext(profileDir, { ...launchOpts, args: args2 });
     }
 
     const pages = this.context.pages();
@@ -108,7 +107,8 @@ class BrowserManager {
       return route.continue();
     });
     this.browser = this.context.browser();
-    this.log.info('Chromium ready (direct, no proxy)');
+    this.activeProxy = proxyServer || null;
+    this.log.info('Chromium ready proxy=' + (this.activeProxy || 'none'));
     return { browser: this.browser, context: this.context, page: this.page };
   }
   async getPage() {
@@ -127,7 +127,7 @@ class BrowserManager {
     this.log.info('Shutting down browser (profile preserved)');
     try { if (this.context) await this.context.close().catch(() => {}); } catch {}
     this.context = null; this.page = null; this.browser = null;
-    this.lock = false; this.lockOwner = null;
+    this.lock = false; this.lockOwner = null; this.activeProxy = null;
   }
   async launchForSetup() {
     return this.ensureBrowser({ headless: true });
