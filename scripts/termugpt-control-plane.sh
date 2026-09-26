@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# ERMI Termux CONTROL PLANE v7 — one-command installer/repairer
+# ERMI Termux CONTROL PLANE v7.1 — one-command installer/repairer
 # Layers: Runtime | Watchdog | Maintenance | Boot recovery
-# Safe to re-run. Idempotent.
+# Safe to re-run. Idempotent. No credentials in this script.
 set -e
 export HOME="${HOME:-/data/data/com.termux/files/home}"
 export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -11,32 +11,66 @@ mkdir -p "$BASE/logs" "$BASE/pids" "$BASE/health" "$HOME/.ssh" "$HOME/bin" "$PRE
 
 RAW="https://raw.githubusercontent.com/ermiyas48/ermi-worker-agent/main/scripts"
 CP="$RAW/control-plane"
-VERSION="v7"
+VERSION="v7.1"
+JOB_WATCHDOG=17001
+JOB_MAINTAIN=17002
 
 echo "[ermi] CONTROL PLANE $VERSION install/repair"
 
+FAIL=0
+DEGRADED=0
+
 echo "[ermi] ensuring packages..."
 pkg update -y >/dev/null 2>&1 || true
-for pkg in openssh curl which coreutils procps findutils grep sed gawk termux-api; do
-  command -v "${pkg%% *}" >/dev/null 2>&1 || pkg install -y "$pkg" 2>/dev/null || true
+if ! command -v ssh >/dev/null 2>&1 || ! command -v sshd >/dev/null 2>&1; then
+  if ! pkg install -y openssh 2>/dev/null; then
+    echo "[ermi] FAIL critical package: openssh"
+    FAIL=1
+  fi
+fi
+if ! command -v curl >/dev/null 2>&1; then
+  if ! pkg install -y curl 2>/dev/null; then
+    echo "[ermi] FAIL critical package: curl"
+    FAIL=1
+  fi
+fi
+for pkg in which coreutils procps findutils grep sed gawk termux-api; do
+  command -v "${pkg%% *}" >/dev/null 2>&1 || pkg install -y "$pkg" 2>/dev/null || {
+    echo "[ermi] DEGRADED optional package: $pkg"
+    DEGRADED=1
+  }
 done
+if [ "$FAIL" -eq 1 ]; then
+  echo "[ermi] FAIL: critical dependencies missing — abort"
+  exit 1
+fi
 
-if [ ! -f "$BASE/config.env" ]; then
+if [ -f "$BASE/config.env" ]; then
+  echo "[ermi] preserving existing config.env"
+  grep -q '^URL=' "$BASE/config.env" 2>/dev/null || echo 'URL=https://ermi-worker-agent-production.up.railway.app' >>"$BASE/config.env"
+  grep -q '^PINGGY_USER=' "$BASE/config.env" 2>/dev/null || echo 'PINGGY_USER=tcp@free.pinggy.io' >>"$BASE/config.env"
+  grep -q '^SOCKS_PORT=' "$BASE/config.env" 2>/dev/null || echo 'SOCKS_PORT=1080' >>"$BASE/config.env"
+  grep -q '^ROTATE_SECS=' "$BASE/config.env" 2>/dev/null || echo 'ROTATE_SECS=2700' >>"$BASE/config.env"
+else
   cat >"$BASE/config.env" << 'CFGEOF'
-TOKEN=cacfafa2f5665416049ef7dbe94b795908fb4a004b438e6c7aa22945f78bc8b2
+# ERMI config — set TOKEN locally. Never commit real tokens.
+TOKEN=
 URL=https://ermi-worker-agent-production.up.railway.app
 PINGGY_USER=tcp@free.pinggy.io
 SOCKS_PORT=1080
 SSHD_PORT=8022
 ROTATE_SECS=2700
 CFGEOF
-  echo "[ermi] created default config.env"
-else
-  echo "[ermi] preserving existing config.env"
-  grep -q '^URL=' "$BASE/config.env" 2>/dev/null || echo 'URL=https://ermi-worker-agent-production.up.railway.app' >>"$BASE/config.env"
-  grep -q '^PINGGY_USER=' "$BASE/config.env" 2>/dev/null || echo 'PINGGY_USER=tcp@free.pinggy.io' >>"$BASE/config.env"
-  grep -q '^SOCKS_PORT=' "$BASE/config.env" 2>/dev/null || echo 'SOCKS_PORT=1080' >>"$BASE/config.env"
-  grep -q '^ROTATE_SECS=' "$BASE/config.env" 2>/dev/null || echo 'ROTATE_SECS=2700' >>"$BASE/config.env"
+  chmod 600 "$BASE/config.env"
+  echo "[ermi] created credential-free config.env template"
+fi
+
+# shellcheck disable=SC1091
+. "$BASE/config.env"
+if [ -z "${TOKEN:-}" ]; then
+  echo "[ermi] DEGRADED: TOKEN empty in $BASE/config.env"
+  echo "[ermi]          set TOKEN=<your-owner-token> then: termugpt"
+  DEGRADED=1
 fi
 
 [ -f "$HOME/.ssh/id_ermi" ] || ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ermi" -N "" -q
@@ -58,21 +92,35 @@ echo "[ermi] fetching layer scripts..."
 dl() {
   local url="$1" dest="$2"
   local tmp="${dest}.tmp"
-  curl -fsSL --max-time 60 "$url" -o "$tmp" || return 1
-  head -1 "$tmp" | grep -q 'bash' || { rm -f "$tmp"; return 1; }
+  if ! curl -fsSL --max-time 60 "$url" -o "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! head -1 "$tmp" | grep -q 'bash'; then
+    rm -f "$tmp"
+    return 1
+  fi
   mv "$tmp" "$dest"
   chmod 755 "$dest"
-  echo "[ermi] wrote $(basename $dest)"
+  echo "[ermi] wrote $(basename "$dest")"
+  return 0
 }
 
 if ! dl "$CP/ermi-runtime.sh" "$BASE/ermi-runtime.sh"; then
-  dl "$RAW/termugpt.sh" "$BASE/ermi-runtime.sh" || { echo "[ermi] FAIL runtime"; exit 1; }
+  echo "[ermi] FAIL: cannot download $CP/ermi-runtime.sh"
+  exit 1
 fi
 ln -sf "$BASE/ermi-runtime.sh" "$BASE/termugpt.sh"
 
-dl "$CP/ermi-watchdog.sh" "$BASE/ermi-watchdog.sh" || { echo "[ermi] FAIL watchdog"; exit 1; }
-dl "$CP/ermi-maintain.sh" "$BASE/ermi-maintain.sh" || { echo "[ermi] FAIL maintain"; exit 1; }
-dl "$CP/ermi-boot.sh" "$BASE/ermi-boot.sh" || { echo "[ermi] FAIL boot"; exit 1; }
+if ! dl "$CP/ermi-watchdog.sh" "$BASE/ermi-watchdog.sh"; then
+  echo "[ermi] FAIL: cannot download watchdog"; exit 1
+fi
+if ! dl "$CP/ermi-maintain.sh" "$BASE/ermi-maintain.sh"; then
+  echo "[ermi] FAIL: cannot download maintain"; exit 1
+fi
+if ! dl "$CP/ermi-boot.sh" "$BASE/ermi-boot.sh"; then
+  echo "[ermi] FAIL: cannot download boot"; exit 1
+fi
 
 cat >"$HOME/bin/termugpt" << 'WRAP'
 #!/data/data/com.termux/files/usr/bin/bash
@@ -123,6 +171,12 @@ echo "=== ERMI CONTROL PLANE STATUS ==="
 echo "state: $(cat $BASE/state.txt 2>/dev/null || echo none)"
 echo "proxy: $(cat $BASE/PROXY_SERVER.txt 2>/dev/null || echo none)"
 echo "public: $(cat $BASE/last_public.txt 2>/dev/null || echo none)"
+TOKEN_SET=no
+if [ -f "$BASE/config.env" ]; then
+  . "$BASE/config.env"
+  [ -n "${TOKEN:-}" ] && TOKEN_SET=yes
+fi
+echo "token: $TOKEN_SET"
 echo "health:"
 cat "$BASE/health/status.env" 2>/dev/null || echo "  (none)"
 echo "locks:"
@@ -136,18 +190,16 @@ done
 echo "processes:"
 pgrep -af "ermi-runtime|ssh -D 127.0.0.1|pinggy" 2>/dev/null | head -10 || echo "  (none)"
 echo "boot: $([ -x $HOME/.termux/boot/ermi-start.sh ] && echo installed || echo missing)"
-echo "watchdog jobs:"
-termux-job-scheduler --pending 2>/dev/null | head -20 || echo "  (termux-job-scheduler unavailable)"
+echo "jobs:"
+termux-job-scheduler --pending 2>/dev/null | head -30 || echo "  (termux-job-scheduler unavailable)"
 echo "=== runtime log (tail) ==="
-tail -15 "$BASE/logs/runtime.log" 2>/dev/null || tail -15 "$BASE/logs/supervisor.log" 2>/dev/null || true
+tail -15 "$BASE/logs/runtime.log" 2>/dev/null || true
 WRAP
 chmod 755 "$HOME/bin/termugpt-status"
 
 cat >"$HOME/bin/termugpt-logs" << 'WRAP'
 #!/data/data/com.termux/files/usr/bin/bash
-f="$HOME/sim-exit/logs/runtime.log"
-[ -f "$f" ] || f="$HOME/sim-exit/logs/supervisor.log"
-tail -f "$f"
+tail -f "$HOME/sim-exit/logs/runtime.log"
 WRAP
 chmod 755 "$HOME/bin/termugpt-logs"
 
@@ -171,12 +223,16 @@ chmod 755 "$HOME/.termux/boot/ermi-start.sh"
 echo "[ermi] boot hook installed"
 
 if command -v termux-job-scheduler >/dev/null 2>&1; then
-  termux-job-scheduler --cancel-all 2>/dev/null || true
-  termux-job-scheduler -s "$BASE/ermi-watchdog.sh" --period 900 --network any --battery-not-low false 2>/dev/null || true
-  termux-job-scheduler -s "$BASE/ermi-maintain.sh" --period 86400 --network any --battery-not-low true 2>/dev/null || true
-  echo "[ermi] scheduled: watchdog ~15m, maintain daily (packages weekly inside)"
+  termux-job-scheduler --script "$BASE/ermi-watchdog.sh" \
+    --job-id "$JOB_WATCHDOG" --period-ms 900000 \
+    --network any --battery-not-low false --persisted true
+  termux-job-scheduler --script "$BASE/ermi-maintain.sh" \
+    --job-id "$JOB_MAINTAIN" --period-ms 86400000 \
+    --network any --battery-not-low true --persisted true
+  echo "[ermi] scheduled job-id=$JOB_WATCHDOG (watchdog 15m), job-id=$JOB_MAINTAIN (maintain daily)"
 else
-  echo "[ermi] termux-job-scheduler not found — install Termux:API"
+  echo "[ermi] DEGRADED: termux-job-scheduler missing (install Termux:API)"
+  DEGRADED=1
 fi
 
 echo "[ermi] starting runtime..."
@@ -193,16 +249,19 @@ for i in $(seq 1 100); do
 done
 
 echo ""
-echo "========== ERMI CONTROL PLANE v7 =========="
+echo "========== ERMI CONTROL PLANE $VERSION =========="
 echo "state: $(cat $BASE/state.txt 2>/dev/null || echo unknown)"
 echo "proxy: $(cat $BASE/PROXY_SERVER.txt 2>/dev/null || echo none)"
-if [ "$OK" = "1" ]; then
-  echo "result: ACTIVE — e2e + Railway OK"
+if [ -z "${TOKEN:-}" ]; then
+  echo "result: DEGRADED — TOKEN missing; set in $BASE/config.env then: termugpt"
+elif [ "$OK" = "1" ]; then
+  echo "result: SUCCESS — ACTIVE e2e + Railway valid"
 else
-  echo "result: not yet ACTIVE — run: termugpt-status"
-  tail -20 "$BASE/logs/runtime.log" 2>/dev/null || tail -20 "$BASE/logs/supervisor.log" 2>/dev/null || true
+  echo "result: DEGRADED — not ACTIVE yet; run: termugpt-status"
+  tail -20 "$BASE/logs/runtime.log" 2>/dev/null || true
 fi
+[ "$DEGRADED" -eq 1 ] && echo "note: some optional components DEGRADED (see above)"
 echo "commands: termugpt | termugpt-status | termugpt-stop | termugpt-logs"
 echo "           termugpt-watchdog | termugpt-maintain [auto|cleanup|packages]"
-echo "layers: RUNTIME | WATCHDOG(~15m) | MAINTAIN(weekly pkgs) | BOOT"
-echo "==========================================="
+echo "jobs: $JOB_WATCHDOG=watchdog $JOB_MAINTAIN=maintain"
+echo "================================================="
