@@ -17,7 +17,7 @@ const setup = getSetupController(logger);
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: false }));
-app.use(express.json({ limit: '32kb' }));
+app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 const controlLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
@@ -64,6 +64,14 @@ app.post('/setup/browser', controlLimiter, requireOwner, async (req, res) => {
   if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete. Setup route is disabled.' });
   const result = await setup.startSetupBrowser();
   res.status(result.ok ? 200 : 500).json(result);
+});
+
+app.post('/setup/cookies', controlLimiter, requireOwner, async (req, res) => {
+  if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete.' });
+  const body = req.body;
+  const cookies = Array.isArray(body) ? body : (body && body.cookies);
+  const result = await setup.importCookies(cookies);
+  res.status(result.ok ? 200 : 400).json(result);
 });
 
 app.get('/setup/status', controlLimiter, requireOwner, async (req, res) => {
