@@ -9,13 +9,15 @@ export PATH="$PREFIX/bin:$HOME/bin:$PATH"
 BASE="$HOME/sim-exit"
 mkdir -p "$BASE/logs" "$BASE/pids" "$BASE/health" "$HOME/.ssh" "$HOME/bin" "$PREFIX/etc/ssh" "$HOME/.termux/boot"
 
-RAW="https://raw.githubusercontent.com/ermiyas48/ermi-worker-agent/main/scripts"
+# Exact source pin (same commit as tested layers)
+PIN="26cc766abfd300c7cc496902431012cfb5d625f6"
+RAW="https://raw.githubusercontent.com/ermiyas48/ermi-worker-agent/${PIN}/scripts"
 CP="$RAW/control-plane"
 VERSION="v7.1"
 JOB_WATCHDOG=17001
 JOB_MAINTAIN=17002
 
-echo "[ermi] CONTROL PLANE $VERSION install/repair"
+echo "[ermi] CONTROL PLANE $VERSION install/repair (pin=$PIN)"
 
 FAIL=0
 DEGRADED=0
@@ -69,7 +71,7 @@ fi
 . "$BASE/config.env"
 if [ -z "${TOKEN:-}" ]; then
   echo "[ermi] DEGRADED: TOKEN empty in $BASE/config.env"
-  echo "[ermi]          set TOKEN=<your-owner-token> then: termugpt"
+  echo "[ermi]          inject once: termugpt-set-token"
   DEGRADED=1
 fi
 
@@ -88,7 +90,7 @@ pkill -f "tcp@free.pinggy.io" 2>/dev/null || true
 pkill -f "free.pinggy.io" 2>/dev/null || true
 sleep 2
 
-echo "[ermi] fetching layer scripts..."
+echo "[ermi] fetching layer scripts (pin=$PIN)..."
 dl() {
   local url="$1" dest="$2"
   local tmp="${dest}.tmp"
@@ -96,42 +98,57 @@ dl() {
     rm -f "$tmp"
     return 1
   fi
-  if ! head -1 "$tmp" | grep -qE 'bash|parse_public'; then
+  local sz
+  sz=$(wc -c <"$tmp" 2>/dev/null || echo 0)
+  if [ "$sz" -lt 200 ]; then
+    echo "[ermi] FAIL: $url too small ($sz bytes)"
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! bash -n "$tmp" 2>/dev/null; then
+    echo "[ermi] FAIL: bash -n failed for $(basename "$dest")"
     rm -f "$tmp"
     return 1
   fi
   mv "$tmp" "$dest"
   chmod 755 "$dest" 2>/dev/null || true
-  echo "[ermi] wrote $(basename "$dest")"
+  echo "[ermi] wrote $(basename "$dest") ($sz bytes, bash -n OK)"
   return 0
 }
 
-if dl "$CP/ermi-runtime.sh" "$BASE/ermi-runtime.sh"; then
-  :
+RT_OK=0
+if dl "$CP/ermi-runtime.sh" "$BASE/ermi-runtime.sh.new"; then
+  RT_OK=1
 elif dl "$CP/ermi-runtime.a.sh" "$BASE/ermi-runtime.a.sh" && dl "$CP/ermi-runtime.b.sh" "$BASE/ermi-runtime.b.sh"; then
-  cat "$BASE/ermi-runtime.a.sh" "$BASE/ermi-runtime.b.sh" > "$BASE/ermi-runtime.sh"
-  chmod 755 "$BASE/ermi-runtime.sh"
+  cat "$BASE/ermi-runtime.a.sh" "$BASE/ermi-runtime.b.sh" > "$BASE/ermi-runtime.sh.new"
+  chmod 755 "$BASE/ermi-runtime.sh.new"
+  if ! bash -n "$BASE/ermi-runtime.sh.new" 2>/dev/null; then
+    echo "[ermi] FAIL: assembled runtime bash -n failed"
+    exit 1
+  fi
   rm -f "$BASE/ermi-runtime.a.sh" "$BASE/ermi-runtime.b.sh"
-  echo "[ermi] assembled ermi-runtime.sh from a+b"
-else
-  echo "[ermi] FAIL: cannot download ermi-runtime.sh or a+b parts"
+  echo "[ermi] assembled ermi-runtime.sh (bash -n OK)"
+  RT_OK=1
+fi
+if [ "$RT_OK" -ne 1 ]; then
+  echo "[ermi] FAIL: cannot download ermi-runtime.sh or a+b parts from pin $PIN"
   exit 1
 fi
-if ! grep -q 'post_proxy' "$BASE/ermi-runtime.sh" || ! grep -q 'ROTATE_SECS' "$BASE/ermi-runtime.sh"; then
+if ! grep -q 'post_proxy' "$BASE/ermi-runtime.sh.new" || ! grep -q 'ROTATE_SECS' "$BASE/ermi-runtime.sh.new"; then
   echo "[ermi] FAIL: runtime missing required functions"
   exit 1
 fi
+mv "$BASE/ermi-runtime.sh.new" "$BASE/ermi-runtime.sh"
 ln -sf "$BASE/ermi-runtime.sh" "$BASE/termugpt.sh"
 
-if ! dl "$CP/ermi-watchdog.sh" "$BASE/ermi-watchdog.sh"; then
-  echo "[ermi] FAIL: cannot download watchdog"; exit 1
-fi
-if ! dl "$CP/ermi-maintain.sh" "$BASE/ermi-maintain.sh"; then
-  echo "[ermi] FAIL: cannot download maintain"; exit 1
-fi
-if ! dl "$CP/ermi-boot.sh" "$BASE/ermi-boot.sh"; then
-  echo "[ermi] FAIL: cannot download boot"; exit 1
-fi
+for pair in "ermi-watchdog.sh:watchdog" "ermi-maintain.sh:maintain" "ermi-boot.sh:boot"; do
+  f="${pair%%:*}"; label="${pair##*:}"
+  if ! dl "$CP/$f" "$BASE/${f}.new"; then
+    echo "[ermi] FAIL: cannot download $label"
+    exit 1
+  fi
+  mv "$BASE/${f}.new" "$BASE/$f"
+done
 
 cat >"$HOME/bin/termugpt" << 'WRAP'
 #!/data/data/com.termux/files/usr/bin/bash
@@ -226,6 +243,36 @@ exec bash "$HOME/sim-exit/ermi-maintain.sh" "$@"
 WRAP
 chmod 755 "$HOME/bin/termugpt-maintain"
 
+cat >"$HOME/bin/termugpt-set-token" << 'WRAP'
+#!/data/data/com.termux/files/usr/bin/bash
+# Usage: termugpt-set-token   (reads one line from stdin; never prints the secret)
+set -e
+BASE="${HOME:-/data/data/com.termux/files/home}/sim-exit"
+mkdir -p "$BASE"
+if [ -t 0 ]; then
+  echo "Paste TOKEN then Enter (input hidden if possible):" >&2
+  stty -echo 2>/dev/null || true
+  read -r TOK
+  stty echo 2>/dev/null || true
+  echo >&2
+else
+  read -r TOK
+fi
+[ -n "$TOK" ] || { echo "empty token" >&2; exit 1; }
+touch "$BASE/config.env"
+chmod 600 "$BASE/config.env"
+if grep -q '^TOKEN=' "$BASE/config.env" 2>/dev/null; then
+  grep -v '^TOKEN=' "$BASE/config.env" >"$BASE/config.env.tmp" || true
+  printf 'TOKEN=%s\n' "$TOK" >>"$BASE/config.env.tmp"
+  mv "$BASE/config.env.tmp" "$BASE/config.env"
+else
+  printf 'TOKEN=%s\n' "$TOK" >>"$BASE/config.env"
+fi
+chmod 600 "$BASE/config.env"
+echo "token saved (not displayed). run: termugpt"
+WRAP
+chmod 755 "$HOME/bin/termugpt-set-token"
+
 grep -q 'HOME/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >>"$HOME/.bashrc"
 export PATH="$HOME/bin:$PATH"
 
@@ -261,18 +308,19 @@ done
 
 echo ""
 echo "========== ERMI CONTROL PLANE $VERSION =========="
+echo "pin: $PIN"
 echo "state: $(cat $BASE/state.txt 2>/dev/null || echo unknown)"
 echo "proxy: $(cat $BASE/PROXY_SERVER.txt 2>/dev/null || echo none)"
 if [ -z "${TOKEN:-}" ]; then
-  echo "result: DEGRADED — TOKEN missing; set in $BASE/config.env then: termugpt"
+  echo "result: DEGRADED — set token once: termugpt-set-token"
 elif [ "$OK" = "1" ]; then
   echo "result: SUCCESS — ACTIVE e2e + Railway valid"
 else
   echo "result: DEGRADED — not ACTIVE yet; run: termugpt-status"
   tail -20 "$BASE/logs/runtime.log" 2>/dev/null || true
 fi
-[ "$DEGRADED" -eq 1 ] && echo "note: some optional components DEGRADED (see above)"
-echo "commands: termugpt | termugpt-status | termugpt-stop | termugpt-logs"
+[ "$DEGRADED" -eq 1 ] && echo "note: some optional components DEGRADED"
+echo "commands: termugpt | termugpt-status | termugpt-stop | termugpt-set-token"
 echo "           termugpt-watchdog | termugpt-maintain [auto|cleanup|packages]"
 echo "jobs: $JOB_WATCHDOG=watchdog $JOB_MAINTAIN=maintain"
 echo "================================================="
