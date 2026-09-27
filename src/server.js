@@ -12,6 +12,8 @@ const { getRunExecutor } = require('./run-executor');
 const { getSetupController } = require('./setup-controller');
 
 const app = express();
+// Railway reverse proxy — required to avoid ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
+app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -52,6 +54,8 @@ app.get('/status', requireOwner, (req, res) => {
     startedAt: st.startedAt || null, finishedAt: st.finishedAt || null,
     promptKind: st.promptKind || null,
     conversationUrl: st.conversationUrl || null,
+    conversationId: st.conversationId || null,
+    verificationReceipt: st.verificationReceipt || null,
     network: {
       desiredProxyValid: !!(px && px.valid),
       desiredProxySet: !!(px && px.server),
