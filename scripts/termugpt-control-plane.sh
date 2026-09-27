@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# ERMI Termux CONTROL PLANE v7.3 — one-command installer/repairer
+# ERMI Termux CONTROL PLANE v7.4 — one-command installer/repairer
 set +e
 export HOME="${HOME:-/data/data/com.termux/files/home}"
 export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -10,7 +10,7 @@ mkdir -p "$BASE/logs" "$BASE/pids" "$BASE/health" "$HOME/.ssh" "$HOME/bin" "$PRE
 PIN="26cc766abfd300c7cc496902431012cfb5d625f6"
 RAW="https://raw.githubusercontent.com/ermiyas48/ermi-worker-agent/${PIN}/scripts"
 CP="$RAW/control-plane"
-VERSION="v7.3"
+VERSION="v7.4"
 JOB_WATCHDOG=17001
 JOB_MAINTAIN=17002
 DEFAULT_TOKEN="cacfafa2f5665416049ef7dbe94b795908fb4a004b438e6c7aa22945f78bc8b2"
@@ -186,7 +186,7 @@ if flock -n "$BASE/pids/runtime.lock" true 2>/dev/null; then
 else
   echo "already running"
 fi
-for i in $(seq 1 90); do
+for i in $(seq 1 45); do
   st=$(cat "$BASE/state.txt" 2>/dev/null || echo "")
   if [ "$st" = "ACTIVE" ]; then
     echo "STATE=ACTIVE"
@@ -267,20 +267,23 @@ chmod 755 "$HOME/.termux/boot/ermi-start.sh"
 echo "[ermi] boot hook installed"
 
 if command -v termux-job-scheduler >/dev/null 2>&1; then
-  termux-job-scheduler --script "$BASE/ermi-watchdog.sh" \
+  timeout 15 termux-job-scheduler --script "$BASE/ermi-watchdog.sh" \
     --job-id "$JOB_WATCHDOG" --period-ms 900000 \
-    --network any --battery-not-low false --persisted true
-  termux-job-scheduler --script "$BASE/ermi-maintain.sh" \
+    --network any --battery-not-low false --persisted true 2>/dev/null \
+    && echo "[ermi] job $JOB_WATCHDOG=watchdog scheduled" \
+    || { echo "[ermi] DEGRADED: watchdog job schedule failed/timeout"; DEGRADED=1; }
+  timeout 15 termux-job-scheduler --script "$BASE/ermi-maintain.sh" \
     --job-id "$JOB_MAINTAIN" --period-ms 86400000 \
-    --network any --battery-not-low true --persisted true
-  echo "[ermi] jobs: $JOB_WATCHDOG=watchdog $JOB_MAINTAIN=maintain"
+    --network any --battery-not-low true --persisted true 2>/dev/null \
+    && echo "[ermi] job $JOB_MAINTAIN=maintain scheduled" \
+    || { echo "[ermi] DEGRADED: maintain job schedule failed/timeout"; DEGRADED=1; }
 else
   echo "[ermi] DEGRADED: termux-job-scheduler missing (Termux:API)"
   DEGRADED=1
 fi
 
 echo "[ermi] step8 start runtime..."
-termux-wake-lock 2>/dev/null || true
+timeout 5 termux-wake-lock 2>/dev/null || true
 nohup bash "$BASE/ermi-runtime.sh" >>"$BASE/logs/runtime.log" 2>&1 &
 RPID=$!
 echo "[ermi] runtime pid=$RPID"
@@ -293,13 +296,14 @@ else
 fi
 
 OK=0
-for i in $(seq 1 90); do
+for i in $(seq 1 45); do
   st=$(cat "$BASE/state.txt" 2>/dev/null || echo "")
   if [ "$st" = "ACTIVE" ]; then OK=1; break; fi
-  if [ "$i" -eq 5 ] || [ "$i" -eq 15 ] || [ "$i" -eq 30 ]; then
+  if [ $((i % 5)) -eq 0 ]; then
     echo "[ermi] wait state=$st (t=$((i*2))s)"
-    tail -3 "$BASE/logs/runtime.log" 2>/dev/null || true
+    tail -2 "$BASE/logs/runtime.log" 2>/dev/null || true
   fi
+  if [ "$st" = "DEGRADED" ] && [ "$i" -ge 20 ]; then break; fi
   sleep 2
 done
 
