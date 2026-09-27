@@ -122,23 +122,43 @@ class RunExecutor {
       this._transition(STATES.AUTHENTICATED);
 
       this._transition(STATES.NEW_CHAT_READY);
-      await adapter.openNewChat();
-      await page.waitForTimeout(500);
+      const newChatOk = await adapter.openNewChat();
+      this.log.info('openNewChat result=' + newChatOk);
+      await page.waitForTimeout(600);
 
       this._transition(STATES.COMPOSER_READY);
-      composer = await adapter.waitForComposer(15000);
-      if (!composer) {
-        this.log.warn('Composer missing after new chat — hard reload');
-        await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        await page.waitForTimeout(1500);
-        composer = await adapter.waitForComposer(20000);
+      composer = null;
+      if (typeof adapter.isComposerUsable === 'function') {
+        composer = await adapter.isComposerUsable(12000);
+      } else {
+        composer = await adapter.waitForComposer(12000);
       }
-      if (!composer) throw new Error('Composer not ready after new chat');
+      if (!composer) {
+        this.log.warn('Composer missing after openNewChat — bounded recovery');
+        await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
+        await page.waitForTimeout(2000);
+        try { await page.keyboard.press('Escape'); } catch (e) {}
+        if (typeof adapter.isComposerUsable === 'function') {
+          composer = await adapter.isComposerUsable(15000);
+        } else {
+          composer = await adapter.waitForComposer(15000);
+        }
+      }
+      if (!composer) {
+        this._transition(STATES.FAILED, {
+          error: 'Composer not ready after new chat',
+          message: 'FAILED — no usable composer after new chat + recovery',
+        });
+        this.current.finishedAt = new Date().toISOString();
+        saveRunState(this.current);
+        this.bm.releaseLock(runId);
+        return;
+      }
 
       this._transition(STATES.PROMPT_INSERTED);
       await adapter.insertPrompt(prompt);
       if (!(await adapter.verifyPromptExact(prompt))) {
-        this.log.warn('Prompt insert soft-fail — retry');
+        this.log.warn('Prompt insert not exact — retry');
         await adapter.insertPrompt(prompt);
       }
 
@@ -158,7 +178,7 @@ class RunExecutor {
         await adapter.insertPrompt(prompt);
         await new Promise(function(r) { setTimeout(r, 500); });
         if (!(await adapter.verifyPromptExact(prompt))) {
-          this._transition(STATES.NEEDS_REVIEW, { error: 'Composer content changed before send', message: 'NEEDS_REVIEW — prompt mismatch before send' });
+          this._transition(STATES.NEEDS_REVIEW, { error: 'Composer content not exact before send', message: 'NEEDS_REVIEW — exact prompt mismatch before send' });
           this.current.finishedAt = new Date().toISOString();
           saveRunState(this.current);
           this.bm.releaseLock(runId);
