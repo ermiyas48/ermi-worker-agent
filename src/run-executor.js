@@ -95,22 +95,10 @@ class RunExecutor {
       const verified = await adapter.verifyPromptExact(prompt);
       if (!verified) this.log.warn('Prompt verification soft-fail');
 
+      // Skip plus/plugins/thinking — reliable visible send is the goal
       this._transition(STATES.PLUS_MENU_OPEN);
-      try {
-        const plusOpened = await adapter.openPlusMenu();
-        if (plusOpened) await adapter.selectPluginsIfAvailable();
-      } catch (e) {
-        this.log.warn('Plus/plugins optional step: ' + e.message);
-      }
       this._transition(STATES.PLUGIN_STATE_CONFIRMED);
-
-      try {
-        await adapter.selectThinkingIfAvailable();
-      } catch (e) {
-        this.log.warn('Thinking optional step: ' + e.message);
-      }
       this._transition(STATES.THINKING_STATE_CONFIRMED);
-
       this._transition(STATES.READY_TO_SEND);
       if (!(await adapter.isAuthenticated())) {
         this._transition(STATES.REAUTH_REQUIRED, { error: 'ChatGPT session needs re-authentication.', message: 'ChatGPT session needs re-authentication.' });
@@ -120,7 +108,7 @@ class RunExecutor {
         return;
       }
       if (!(await adapter.verifyPromptExact(prompt))) {
-        this.log.warn('Prompt lost after menu steps — re-inserting');
+        this.log.warn('Prompt lost — re-inserting');
         await adapter.insertPrompt(prompt);
         await new Promise(function(r) { setTimeout(r, 500); });
         if (!(await adapter.verifyPromptExact(prompt))) {
@@ -135,23 +123,27 @@ class RunExecutor {
       this._transition(STATES.MESSAGE_SENT);
       const sendMethod = await adapter.sendMessage();
       this.log.info('Message sent via ' + sendMethod);
-      await new Promise(function(r) { setTimeout(r, 800); });
+      await new Promise(function(r) { setTimeout(r, 1000); });
 
-      const appeared = await adapter.verifyUserMessageAppeared(prompt, 40000);
+      const appeared = await adapter.verifyUserMessageAppeared(prompt, 45000);
       if (!appeared) {
-        this._transition(STATES.NEEDS_REVIEW, { error: 'Could not verify user message after send', message: 'NEEDS_REVIEW — submission ambiguous, not resending' });
+        this._transition(STATES.NEEDS_REVIEW, { error: 'Could not verify user message after send', message: 'NEEDS_REVIEW — no visible user message in chat' });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
         return;
       }
       this._transition(STATES.MESSAGE_VERIFIED);
-
-      this._transition(STATES.COMPLETE, { message: 'ERMI Worker Agent prompt submitted and verified successfully' });
+      let convUrl = null;
+      try { convUrl = await adapter.getConversationUrl(); } catch (e) {}
+      const doneMsg = convUrl
+        ? ('ERMI prompt submitted and verified. chat=' + convUrl)
+        : 'ERMI Worker Agent prompt submitted and verified successfully';
+      this._transition(STATES.COMPLETE, { message: doneMsg, conversationUrl: convUrl });
       this.current.finishedAt = new Date().toISOString();
       saveRunState(this.current);
       this.bm.releaseLock(runId);
-      this.log.info('Run ' + runId + ' COMPLETE');
+      this.log.info('Run ' + runId + ' COMPLETE ' + (convUrl || ''));
     } catch (err) {
       this.log.error('Run ' + runId + ' failed: ' + err.message);
       if (this.current && this.current.id === runId) {
