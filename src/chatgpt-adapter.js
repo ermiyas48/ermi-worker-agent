@@ -109,7 +109,7 @@ class ChatGPTAdapter {
   async openNewChat() {
     const target = config.chatgptNewChatUrl || config.chatgptUrl || 'https://chatgpt.com/';
     const before = await this.getConversationIdentity().catch(function() { return { url: null, conversationId: null }; });
-    const beforeIsConversation = !!(before && before.conversationId) || /chatgpt\\.com\\/c\\//i.test((before && before.url) || '');
+    const beforeIsConversation = !!(before && before.conversationId) || /chatgpt\.com\/c\//i.test((before && before.url) || '');
     if (!beforeIsConversation && await this.isComposerUsable(3000)) {
       this.log.info('Already on home/new-chat with usable composer');
       return true;
@@ -119,7 +119,7 @@ class ChatGPTAdapter {
       let acted = false;
       let currentUrl = '';
       try { currentUrl = this.page.url(); } catch (e) {}
-      const currentIsConversation = /chatgpt\\.com\\/c\\//i.test(currentUrl);
+      const currentIsConversation = /chatgpt\.com\/c\//i.test(currentUrl);
 
       if (currentIsConversation) {
         try {
