@@ -9,8 +9,9 @@ ENV DATA_PATH=/data/state
 ENV HEADLESS=false
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV STARTUP_SCRIPT=scripts/start-prod.sh
 RUN mkdir -p /data/profiles/chatgpt /data/state /data/logs
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
-CMD ["xvfb-run","-a","--server-args=-screen 0 1280x720x24","node","src/server.js"]
+CMD ["bash","scripts/start-prod.sh"]
