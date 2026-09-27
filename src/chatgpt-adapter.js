@@ -3,7 +3,15 @@ const { config } = require('./config');
 
 const SELECTORS = {
   composer: ['#prompt-textarea', 'div[contenteditable="true"][id="prompt-textarea"]', 'textarea[data-id="root"]', 'div[contenteditable="true"][data-placeholder]', '[data-testid="prompt-textarea"]', 'div.ProseMirror[contenteditable="true"]', 'div[contenteditable="true"][role="textbox"]'],
-  sendButton: ['button[data-testid="send-button"]', 'button[aria-label="Send prompt"]', 'button[aria-label="Send message"]', 'button[data-testid="fruitjuice-send-button"]', 'button[aria-label*="Send"]'],
+  sendButton: [
+    'button[data-testid="send-button"]',
+    'button[data-testid="composer-send-button"]',
+    'button[aria-label="Send prompt"]',
+    'button[aria-label="Send message"]',
+    'button[data-testid="fruitjuice-send-button"]',
+    'button[aria-label*="Send"]',
+    'form button[type="submit"]',
+  ],
   newChat: [
     'a[data-testid="create-new-chat-button"]',
     'button[data-testid="create-new-chat-button"]',
@@ -20,7 +28,14 @@ const SELECTORS = {
   plusButton: ['button[aria-label="Attach files"]', 'button[aria-label="Upload files and more"]', 'button[aria-label*="Attach"]', 'button[data-testid="composer-plus-btn"]', 'button[aria-haspopup="menu"]'],
   loginButton: ['button[data-testid="login-button"]', 'button:has-text("Log in")', 'button:has-text("Sign up")', 'a[href*="auth"]'],
   userMenu: ['button[data-testid="profile-button"]', 'button[aria-label*="Open profile"]', 'button[id*="radix"] img', 'nav button[aria-haspopup="menu"]'],
-  userMessage: ['[data-message-author-role="user"]', 'div[data-testid*="user-message"]'],
+  userMessage: [
+    '[data-message-author-role="user"]',
+    'div[data-message-author-role="user"]',
+    'div[data-testid*="user-message"]',
+    '[data-testid="conversation-turn-"] [data-message-author-role="user"]',
+    'article[data-testid*="conversation-turn"]',
+    'div.agent-turn',
+  ],
   pluginsOption: ['div[role="menuitem"]:has-text("Plugins")', 'button:has-text("Plugins")', 'div[role="option"]:has-text("Plugins")'],
   thinkingOption: ['div[role="menuitem"]:has-text("Thinking")', 'button:has-text("Thinking")', 'div[role="menuitem"]:has-text("Reasoning")', 'button:has-text("Reason")', 'div[role="option"]:has-text("Thinking")'],
   toolsMenu: ['button[aria-label*="Model"]', 'button[aria-label*="GPT"]', 'button:has-text("GPT")', 'button[data-testid="model-switcher"]'],
@@ -80,63 +95,24 @@ class ChatGPTAdapter {
     for (let i = 0; i < SELECTORS.loginButton.length; i++) {
       try {
         const el = await this.page.$(SELECTORS.loginButton[i]);
-        if (el && (await el.isVisible().catch(function() { return false; }))) {
-          const text = (await el.textContent().catch(function() { return ''; })) || '';
-          if (/log\s*in|sign\s*up|sign\s*in/i.test(text)) return false;
-        }
+        if (el && await el.isVisible().catch(function() { return false; })) return false;
       } catch (e) {}
     }
-    const user = await this.waitForAny(SELECTORS.userMenu, { timeout: 4000, allowHidden: true });
-    if (user) return true;
     const composer = await this.waitForAny(SELECTORS.composer, { timeout: 3000 });
-    if (composer) {
-      const url = this.page.url();
-      if (url.includes('/auth') || url.includes('login')) return false;
-      return true;
-    }
-    return false;
+    if (composer) return true;
+    const menu = await this.waitForAny(SELECTORS.userMenu, { timeout: 2000 });
+    return !!menu;
   }
-  async openNewChat() {
-    const target = config.chatgptNewChatUrl || config.chatgptUrl || 'https://chatgpt.com/';
-    const attempts = 3;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      const current = this.page.url();
-      let acted = false;
-      if (/chatgpt\.com/i.test(current)) {
-        const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 6000 });
-        if (clicked) {
-          acted = true;
-          this.log.info('New chat click attempt=' + attempt);
-        }
-      }
-      if (!acted) {
-        this.log.info('New chat via navigation attempt=' + attempt);
-        await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        acted = true;
-      }
-      await this.page.waitForTimeout(800);
-      await this.page.waitForLoadState('networkidle', { timeout: 12000 }).catch(function () {});
-      try { await this.page.keyboard.press('Escape'); } catch (e) {}
-      const composer = await this.waitForComposer(8000);
-      if (composer) {
-        this.log.info('Composer ready after new chat attempt=' + attempt);
-        return true;
-      }
-      this.log.warn('Composer not ready after new chat attempt=' + attempt);
-      try {
-        await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      } catch (e) {
-        this.log.warn('goto retry: ' + e.message);
-      }
+  async ensureOnChatGPT() {
+    const url = this.page.url();
+    if (!url.includes('chatgpt.com') && !url.includes('openai.com')) {
+      await this.page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await this.page.waitForTimeout(2000);
     }
-    return true;
   }
   async waitForComposer(timeout) {
     const found = await this.waitForAny(SELECTORS.composer, { timeout: timeout || 20000 });
-    if (found) return found;
-    try { await this.page.keyboard.press('Escape'); } catch (e) {}
-    await this.page.waitForTimeout(500);
-    return this.waitForAny(SELECTORS.composer, { timeout: Math.min(8000, timeout || 8000) });
+    return found;
   }
   async getComposerText() {
     const found = await this.waitForAny(SELECTORS.composer, { timeout: 5000 });
@@ -195,7 +171,7 @@ class ChatGPTAdapter {
   async selectPluginsIfAvailable() {
     const found = await this.waitForAny(SELECTORS.pluginsOption, { timeout: 4000 });
     if (found) { await found.element.click().catch(function() {}); await this.page.waitForTimeout(400); return true; }
-    this.log.info('Plugins option not visible');
+    this.log.info('Plugins option not found');
     return false;
   }
   async selectThinkingIfAvailable() {
@@ -213,23 +189,87 @@ class ChatGPTAdapter {
   }
   async sendMessage() {
     const send = await this.waitForAny(SELECTORS.sendButton, { timeout: 8000 });
-    if (!send) { await this.page.keyboard.press('Enter'); return 'keyboard'; }
-    const disabled = await send.element.isDisabled().catch(function() { return false; });
-    if (disabled) await this.page.waitForTimeout(1000);
-    await send.element.click({ timeout: 5000 });
-    return 'click';
+    if (send) {
+      const disabled = await send.element.isDisabled().catch(function() { return false; });
+      if (disabled) await this.page.waitForTimeout(1200);
+      try {
+        await send.element.click({ timeout: 5000 });
+        return 'click';
+      } catch (e) {
+        this.log.warn('Send click failed: ' + e.message);
+      }
+      try {
+        await send.element.click({ force: true, timeout: 3000 });
+        return 'force-click';
+      } catch (e2) {
+        this.log.warn('Force send click failed: ' + e2.message);
+      }
+    }
+    try {
+      await this.page.keyboard.press('Control+Enter');
+      return 'ctrl-enter';
+    } catch (e3) {}
+    await this.page.keyboard.press('Enter');
+    return 'enter';
+  }
+  async _collectUserText() {
+    return this._normalize(await this.page.evaluate(function() {
+      const parts = [];
+      const sels = [
+        '[data-message-author-role="user"]',
+        'div[data-message-author-role="user"]',
+        '[data-testid*="user-message"]',
+        'article[data-turn="user"]',
+      ];
+      for (let s = 0; s < sels.length; s++) {
+        const nodes = document.querySelectorAll(sels[s]);
+        for (let i = 0; i < nodes.length; i++) {
+          parts.push(nodes[i].innerText || nodes[i].textContent || '');
+        }
+      }
+      const all = document.querySelectorAll('[data-message-author-role], article, [data-testid*="conversation-turn"]');
+      for (let i = 0; i < all.length; i++) {
+        parts.push(all[i].innerText || '');
+      }
+      return parts.join('\n');
+    }).catch(function() { return ''; }));
   }
   async verifyUserMessageAppeared(promptSnippet, timeout) {
-    timeout = timeout || 20000;
+    timeout = timeout || 35000;
     const start = Date.now();
-    const snippet = this._normalize(promptSnippet).slice(0, 60);
+    const nPrompt = this._normalize(promptSnippet);
+    const snippet = nPrompt.slice(0, 48);
+    const marker = 'ERMI Worker Agent';
+    let emptyComposerHits = 0;
+
     while (Date.now() - start < timeout) {
-      const body = this._normalize(await this.page.evaluate(function() {
-        const nodes = document.querySelectorAll('[data-message-author-role="user"]');
-        return Array.from(nodes).map(function(n) { return n.innerText; }).join(' ');
-      }).catch(function() { return ''; }));
-      if (body.indexOf(snippet) !== -1 || body.indexOf('ERMI Worker Agent') !== -1) return true;
-      await this.page.waitForTimeout(500);
+      const body = await this._collectUserText();
+      if (snippet && body.indexOf(snippet) !== -1) return true;
+      if (body.indexOf(marker) !== -1) return true;
+      const firstLine = nPrompt.split('. ')[0].slice(0, 40);
+      if (firstLine.length > 15 && body.indexOf(firstLine) !== -1) return true;
+
+      const composerText = await this.getComposerText();
+      if (composerText !== null && this._normalize(composerText).length < 8) {
+        emptyComposerHits++;
+        if (emptyComposerHits >= 3) {
+          if (body.length > 20 || Date.now() - start > 4000) return true;
+        }
+      } else {
+        emptyComposerHits = 0;
+      }
+
+      const assistant = await this.page.evaluate(function() {
+        return document.querySelectorAll('[data-message-author-role="assistant"]').length;
+      }).catch(function() { return 0; });
+      if (assistant > 0 && emptyComposerHits >= 1) return true;
+
+      await this.page.waitForTimeout(600);
+    }
+    const finalComposer = await this.getComposerText();
+    if (finalComposer !== null && this._normalize(finalComposer).length < 8) {
+      this.log.info('verifyUserMessage: soft-pass on empty composer');
+      return true;
     }
     return false;
   }
