@@ -1,4 +1,5 @@
 FROM mcr.microsoft.com/playwright:v1.63.0-jammy
+# Force Railway to rebuild from the Playwright runtime image.
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev && node -e "console.log('Playwright runtime version:', require('playwright/package.json').version)"
