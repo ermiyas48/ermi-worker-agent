@@ -22,6 +22,9 @@ const SELECTORS = {
     'button[aria-label="New Chat"]',
     'a[aria-label="New Chat"]',
     '[data-testid="new-chat-button"]',
+    'nav a[href="/"]',
+    'a[href="/?model="]',
+    'a[href="/"]',
   ],
   plusButton: ['button[aria-label="Attach files"]', 'button[aria-label="Upload files and more"]', 'button[aria-label*="Attach"]', 'button[data-testid="composer-plus-btn"]'],
   loginButton: ['button[data-testid="login-button"]', 'button:has-text("Log in")', 'button:has-text("Sign up")'],
@@ -100,24 +103,37 @@ class ChatGPTAdapter {
       if (!ok) return null;
       return found;
     } catch (e) {
-      return found;
+      return null;
     }
   }
   async openNewChat() {
     const target = config.chatgptNewChatUrl || config.chatgptUrl || 'https://chatgpt.com/';
-    const before = await this.isComposerUsable(4000);
+    const before = await this.getConversationIdentity().catch(function() { return { url: null, conversationId: null }; });
+    const beforeIsConversation = !!(before && before.conversationId) || /chatgpt\\.com\\/c\\//i.test((before && before.url) || '');
+    if (!beforeIsConversation && await this.isComposerUsable(3000)) {
+      this.log.info('Already on home/new-chat with usable composer');
+      return true;
+    }
+
     for (let attempt = 1; attempt <= 3; attempt++) {
       let acted = false;
-      try {
-        const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 5000 });
-        if (clicked) {
-          acted = true;
-          this.log.info('New chat click attempt=' + attempt);
+      let currentUrl = '';
+      try { currentUrl = this.page.url(); } catch (e) {}
+      const currentIsConversation = /chatgpt\\.com\\/c\\//i.test(currentUrl);
+
+      if (currentIsConversation) {
+        try {
+          const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 6000 });
+          if (clicked) {
+            acted = true;
+            this.log.info('New chat click attempt=' + attempt);
+          }
+        } catch (e) {
+          this.log.warn('New chat click error: ' + e.message);
         }
-      } catch (e) {
-        this.log.warn('New chat click error: ' + e.message);
       }
-      if (!acted && attempt === 1 && !before) {
+
+      if (!acted) {
         this.log.info('New chat via navigation attempt=' + attempt);
         try {
           await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -126,33 +142,34 @@ class ChatGPTAdapter {
           this.log.warn('New chat navigation failed: ' + e.message);
         }
       }
-      await this.page.waitForTimeout(900);
+
+      try { await this.page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) {}
+      await this.page.waitForTimeout(1200);
       try { await this.page.keyboard.press('Escape'); } catch (e) {}
-      const usable = await this.isComposerUsable(10000);
-      if (usable) {
-        this.log.info('Composer usable after new chat attempt=' + attempt);
+
+      const usable = await this.isComposerUsable(12000);
+      if (!usable) {
+        this.log.warn('Composer not usable after new chat attempt=' + attempt);
+        continue;
+      }
+
+      const after = await this.getConversationIdentity().catch(function() { return { url: null, conversationId: null }; });
+      const sameConversation = !!before.conversationId && !!after.conversationId &&
+        before.conversationId === after.conversationId;
+      if (!sameConversation || !beforeIsConversation) {
+        this.log.info('New chat established with usable composer attempt=' + attempt);
         return true;
       }
-      this.log.warn('Composer not usable after new chat attempt=' + attempt);
-    }
-    const fallback = await this.isComposerUsable(5000);
-    if (fallback) {
-      this.log.info('Reusing existing usable composer (new-chat did not yield fresh composer)');
-      return true;
-    }
-    this.log.warn('New chat final recovery via home navigation');
-    try {
-      await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await this.page.waitForTimeout(1500);
-      try { await this.page.keyboard.press('Escape'); } catch (e) {}
-      if (await this.isComposerUsable(12000)) {
-        this.log.info('Composer usable after home recovery');
-        return true;
+
+      this.log.warn('Composer exists but old conversation identity remains attempt=' + attempt);
+      try {
+        await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } catch (e) {
+        this.log.warn('Forced home navigation failed: ' + e.message);
       }
-    } catch (e) {
-      this.log.warn('Home recovery failed: ' + e.message);
     }
-    this.log.warn('openNewChat: no usable composer — returning false');
+
+    this.log.warn('openNewChat: no confirmed new-chat composer');
     return false;
   }
   async getComposerText() {
