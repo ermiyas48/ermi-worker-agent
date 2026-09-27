@@ -69,11 +69,11 @@ class RunExecutor {
 
       this._transition(STATES.CHATGPT_LOADING);
       await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(function() {});
+      await page.waitForTimeout(1500);
 
       this._transition(STATES.CHATGPT_READY);
       const pageState = await adapter.detectPageState();
-      if (pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') {
+      if (pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED' || pageState === 'CLOUDFLARE') {
         this._transition(STATES.REAUTH_REQUIRED, { error: 'ChatGPT session needs re-authentication.', message: 'ChatGPT session needs re-authentication.' });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
@@ -84,22 +84,30 @@ class RunExecutor {
 
       this._transition(STATES.NEW_CHAT_READY);
       await adapter.openNewChat();
-      await page.waitForTimeout(800);
+      await page.waitForTimeout(500);
 
       this._transition(STATES.COMPOSER_READY);
-      const composer = await adapter.waitForComposer(20000);
+      let composer = await adapter.waitForComposer(15000);
+      if (!composer) {
+        this.log.warn('Composer missing after new chat — hard reload chatgpt.com');
+        await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        await page.waitForTimeout(1500);
+        composer = await adapter.waitForComposer(20000);
+      }
       if (!composer) throw new Error('Composer not ready after new chat');
 
       this._transition(STATES.PROMPT_INSERTED);
       await adapter.insertPrompt(prompt);
-      const verified = await adapter.verifyPromptExact(prompt);
-      if (!verified) this.log.warn('Prompt verification soft-fail');
+      if (!(await adapter.verifyPromptExact(prompt))) {
+        this.log.warn('Prompt verification soft-fail — retry insert');
+        await adapter.insertPrompt(prompt);
+      }
 
-      // Skip plus/plugins/thinking — reliable visible send is the goal
       this._transition(STATES.PLUS_MENU_OPEN);
       this._transition(STATES.PLUGIN_STATE_CONFIRMED);
       this._transition(STATES.THINKING_STATE_CONFIRMED);
       this._transition(STATES.READY_TO_SEND);
+
       if (!(await adapter.isAuthenticated())) {
         this._transition(STATES.REAUTH_REQUIRED, { error: 'ChatGPT session needs re-authentication.', message: 'ChatGPT session needs re-authentication.' });
         this.current.finishedAt = new Date().toISOString();
@@ -108,11 +116,10 @@ class RunExecutor {
         return;
       }
       if (!(await adapter.verifyPromptExact(prompt))) {
-        this.log.warn('Prompt lost — re-inserting');
         await adapter.insertPrompt(prompt);
         await new Promise(function(r) { setTimeout(r, 500); });
         if (!(await adapter.verifyPromptExact(prompt))) {
-          this._transition(STATES.NEEDS_REVIEW, { error: 'Composer content changed before send; refusing to send', message: 'NEEDS_REVIEW — prompt mismatch before send' });
+          this._transition(STATES.NEEDS_REVIEW, { error: 'Composer content changed before send', message: 'NEEDS_REVIEW — prompt mismatch before send' });
           this.current.finishedAt = new Date().toISOString();
           saveRunState(this.current);
           this.bm.releaseLock(runId);
@@ -123,7 +130,7 @@ class RunExecutor {
       this._transition(STATES.MESSAGE_SENT);
       const sendMethod = await adapter.sendMessage();
       this.log.info('Message sent via ' + sendMethod);
-      await new Promise(function(r) { setTimeout(r, 1000); });
+      await new Promise(function(r) { setTimeout(r, 1200); });
 
       const appeared = await adapter.verifyUserMessageAppeared(prompt, 45000);
       if (!appeared) {
