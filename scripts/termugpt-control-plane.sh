@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# ERMI Termux CONTROL PLANE v7.2 — one-command installer/repairer
+# ERMI Termux CONTROL PLANE v7.3 — one-command installer/repairer
 set +e
 export HOME="${HOME:-/data/data/com.termux/files/home}"
 export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -10,7 +10,7 @@ mkdir -p "$BASE/logs" "$BASE/pids" "$BASE/health" "$HOME/.ssh" "$HOME/bin" "$PRE
 PIN="26cc766abfd300c7cc496902431012cfb5d625f6"
 RAW="https://raw.githubusercontent.com/ermiyas48/ermi-worker-agent/${PIN}/scripts"
 CP="$RAW/control-plane"
-VERSION="v7.2"
+VERSION="v7.3"
 JOB_WATCHDOG=17001
 JOB_MAINTAIN=17002
 DEFAULT_TOKEN="cacfafa2f5665416049ef7dbe94b795908fb4a004b438e6c7aa22945f78bc8b2"
@@ -39,34 +39,49 @@ fi
 echo "[ermi] step1 ok"
 
 echo "[ermi] step2 config.env..."
-if [ -f "$BASE/config.env" ]; then
-  echo "[ermi] preserving existing config.env"
-  grep -q '^URL=' "$BASE/config.env" 2>/dev/null || echo 'URL=https://ermi-worker-agent-production.up.railway.app' >>"$BASE/config.env"
-  grep -q '^PINGGY_USER=' "$BASE/config.env" 2>/dev/null || echo 'PINGGY_USER=tcp@free.pinggy.io' >>"$BASE/config.env"
-  grep -q '^SOCKS_PORT=' "$BASE/config.env" 2>/dev/null || echo 'SOCKS_PORT=1080' >>"$BASE/config.env"
-  grep -q '^ROTATE_SECS=' "$BASE/config.env" 2>/dev/null || echo 'ROTATE_SECS=2700' >>"$BASE/config.env"
-  if ! grep -q '^TOKEN=.\+' "$BASE/config.env" 2>/dev/null; then
-    grep -v '^TOKEN=' "$BASE/config.env" >"$BASE/config.env.tmp" 2>/dev/null || true
-    printf 'TOKEN=%s\n' "$DEFAULT_TOKEN" >>"$BASE/config.env.tmp"
-    mv "$BASE/config.env.tmp" "$BASE/config.env"
-    echo "[ermi] filled empty TOKEN"
+sanitize_config() {
+  local src="$1" dst="$2"
+  : >"$dst"
+  if [ -f "$src" ]; then
+    local t u p s r h
+    t=$(grep -E '^TOKEN=.+' "$src" 2>/dev/null | tail -1 | sed 's/^TOKEN=//')
+    u=$(grep -E '^URL=.+' "$src" 2>/dev/null | tail -1 | sed 's/^URL=//')
+    p=$(grep -E '^PINGGY_USER=.+' "$src" 2>/dev/null | tail -1 | sed 's/^PINGGY_USER=//')
+    s=$(grep -E '^SOCKS_PORT=.+' "$src" 2>/dev/null | tail -1 | sed 's/^SOCKS_PORT=//')
+    r=$(grep -E '^ROTATE_SECS=.+' "$src" 2>/dev/null | tail -1 | sed 's/^ROTATE_SECS=//')
+    h=$(grep -E '^SSHD_PORT=.+' "$src" 2>/dev/null | tail -1 | sed 's/^SSHD_PORT=//')
+    [ -n "$t" ] || t="$DEFAULT_TOKEN"
+    [ -n "$u" ] || u="https://ermi-worker-agent-production.up.railway.app"
+    [ -n "$p" ] || p="tcp@free.pinggy.io"
+    [ -n "$s" ] || s="1080"
+    [ -n "$r" ] || r="2700"
+    [ -n "$h" ] || h="8022"
+    printf '# ERMI config (sanitized)\n' >"$dst"
+    printf 'TOKEN=%s\n' "$t" >>"$dst"
+    printf 'URL=%s\n' "$u" >>"$dst"
+    printf 'PINGGY_USER=%s\n' "$p" >>"$dst"
+    printf 'SOCKS_PORT=%s\n' "$s" >>"$dst"
+    printf 'SSHD_PORT=%s\n' "$h" >>"$dst"
+    printf 'ROTATE_SECS=%s\n' "$r" >>"$dst"
   else
-    echo "[ermi] TOKEN already present — left unchanged"
-  fi
-else
-  cat >"$BASE/config.env" << CFGEOF
+    cat >"$dst" << CFGEOF
 # ERMI config
-TOKEN=cacfafa2f5665416049ef7dbe94b795908fb4a004b438e6c7aa22945f78bc8b2
+TOKEN=$DEFAULT_TOKEN
 URL=https://ermi-worker-agent-production.up.railway.app
 PINGGY_USER=tcp@free.pinggy.io
 SOCKS_PORT=1080
 SSHD_PORT=8022
 ROTATE_SECS=2700
 CFGEOF
-  chmod 600 "$BASE/config.env"
-  echo "[ermi] created config.env with TOKEN"
+  fi
+  chmod 600 "$dst"
+}
+if [ -f "$BASE/config.env" ]; then
+  cp "$BASE/config.env" "$BASE/config.env.bak" 2>/dev/null || true
+  echo "[ermi] sanitizing existing config.env"
 fi
-chmod 600 "$BASE/config.env" 2>/dev/null || true
+sanitize_config "$BASE/config.env" "$BASE/config.env.clean"
+mv "$BASE/config.env.clean" "$BASE/config.env"
 # shellcheck disable=SC1091
 . "$BASE/config.env"
 if [ -n "${TOKEN:-}" ]; then
