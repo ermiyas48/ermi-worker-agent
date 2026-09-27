@@ -22,17 +22,13 @@ const SELECTORS = {
     'a[aria-label="New Chat"]',
     '[data-testid="new-chat-button"]',
   ],
-  plusButton: ['button[aria-label="Attach files"]', 'button[aria-label="Upload files and more"]', 'button[aria-label*="Attach"]', 'button[data-testid="composer-plus-btn"]', 'button[aria-haspopup="menu"]'],
-  loginButton: ['button[data-testid="login-button"]', 'button:has-text("Log in")', 'button:has-text("Sign up")', 'a[href*="auth"]'],
-  userMenu: ['button[data-testid="profile-button"]', 'button[aria-label*="Open profile"]', 'button[id*="radix"] img', 'nav button[aria-haspopup="menu"]'],
-  userMessage: [
-    '[data-message-author-role="user"]',
-    'div[data-message-author-role="user"]',
-    'div[data-testid*="user-message"]',
-  ],
+  plusButton: ['button[aria-label="Attach files"]', 'button[aria-label="Upload files and more"]', 'button[aria-label*="Attach"]', 'button[data-testid="composer-plus-btn"]'],
+  loginButton: ['button[data-testid="login-button"]', 'button:has-text("Log in")', 'button:has-text("Sign up")'],
+  userMenu: ['button[data-testid="profile-button"]', 'button[aria-label*="Open profile"]', 'nav button[aria-haspopup="menu"]'],
+  userMessage: ['[data-message-author-role="user"]', 'div[data-message-author-role="user"]', 'div[data-testid*="user-message"]'],
   pluginsOption: ['div[role="menuitem"]:has-text("Plugins")', 'button:has-text("Plugins")'],
   thinkingOption: ['div[role="menuitem"]:has-text("Thinking")', 'button:has-text("Thinking")'],
-  toolsMenu: ['button[aria-label*="Model"]', 'button[aria-label*="GPT"]', 'button:has-text("GPT")'],
+  toolsMenu: ['button[aria-label*="Model"]', 'button[aria-label*="GPT"]'],
 };
 
 class ChatGPTAdapter {
@@ -60,30 +56,19 @@ class ChatGPTAdapter {
     const found = await this.waitForAny(selectors, options);
     if (!found) return false;
     const el = found.element;
-    const sel = found.selector;
     try {
       await el.scrollIntoViewIfNeeded().catch(function () {});
       await el.click({ timeout: 5000 });
       return true;
-    } catch (e) {
-      this.log.warn('Click intercepted on ' + sel + ': ' + e.message);
-    }
-    try {
-      await el.click({ force: true, timeout: 3000 });
-      return true;
-    } catch (e2) {
-      this.log.warn('Force click failed on ' + sel + ': ' + e2.message);
-    }
+    } catch (e) {}
+    try { await el.click({ force: true, timeout: 3000 }); return true; } catch (e2) {}
     try {
       await el.evaluate(function (node) {
         node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         if (typeof node.click === 'function') node.click();
       });
       return true;
-    } catch (e3) {
-      this.log.warn('DOM click failed on ' + sel + ': ' + e3.message);
-    }
-    return false;
+    } catch (e3) { return false; }
   }
   async isAuthenticated() {
     for (let i = 0; i < SELECTORS.loginButton.length; i++) {
@@ -92,47 +77,36 @@ class ChatGPTAdapter {
         if (el && await el.isVisible().catch(function() { return false; })) return false;
       } catch (e) {}
     }
-    const composer = await this.waitForAny(SELECTORS.composer, { timeout: 10000 });
-    if (composer) return true;
-    const menu = await this.waitForAny(SELECTORS.userMenu, { timeout: 4000 });
-    if (menu) return true;
-    const history = await this.page.$('[data-testid="history"], nav a[href*="/c/"]').catch(function() { return null; });
-    if (history) return true;
-    return false;
-  }
-  async ensureOnChatGPT() {
-    const url = this.page.url();
-    if (!url.includes('chatgpt.com') && !url.includes('openai.com')) {
-      await this.page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await this.page.waitForTimeout(2000);
-    }
+    if (await this.waitForAny(SELECTORS.composer, { timeout: 10000 })) return true;
+    if (await this.waitForAny(SELECTORS.userMenu, { timeout: 4000 })) return true;
+    const history = await this.page.$('nav a[href*="/c/"]').catch(function() { return null; });
+    return !!history;
   }
   async waitForComposer(timeout) {
     return this.waitForAny(SELECTORS.composer, { timeout: timeout || 20000 });
   }
   async openNewChat() {
-    const already = await this.waitForComposer(3000);
+    const already = await this.waitForComposer(4000);
+    if (already) {
+      const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 3000 });
+      if (clicked) {
+        await this.page.waitForTimeout(1000);
+        try { await this.page.keyboard.press('Escape'); } catch (e) {}
+      }
+      if (await this.waitForComposer(8000)) return true;
+      this.log.info('Keeping pre-existing composer');
+      return true;
+    }
     for (let attempt = 1; attempt <= 2; attempt++) {
       const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 5000 });
       if (clicked) {
         this.log.info('New chat click attempt=' + attempt);
         await this.page.waitForTimeout(1200);
         try { await this.page.keyboard.press('Escape'); } catch (e) {}
-        const composer = await this.waitForComposer(10000);
-        if (composer) {
-          this.log.info('Composer ready after new chat click attempt=' + attempt);
-          return true;
-        }
-      } else {
-        this.log.warn('New chat button not found attempt=' + attempt);
+        if (await this.waitForComposer(10000)) return true;
       }
     }
-    const fallback = await this.waitForComposer(5000);
-    if (fallback || already) {
-      this.log.info('Using existing composer (new-chat soft-fail)');
-      return true;
-    }
-    this.log.warn('New chat fallback navigation');
+    if (await this.waitForComposer(5000)) return true;
     await this.page.goto(config.chatgptUrl || 'https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(function () {});
     await this.page.waitForTimeout(1500);
     return !!(await this.waitForComposer(12000));
@@ -169,13 +143,25 @@ class ChatGPTAdapter {
         }
       }, prompt);
     }
-    await this.page.waitForTimeout(400);
-    const current = await this.getComposerText();
-    if (!current || this._normalize(current).indexOf(this._normalize(prompt).slice(0, 80)) === -1) {
-      await found.element.click();
-      await this.page.keyboard.type(prompt, { delay: 5 });
+    await this.page.waitForTimeout(300);
+    let current = await this.getComposerText();
+    if (!current || this._normalize(current).indexOf(this._normalize(prompt).slice(0, 60)) === -1) {
+      await found.element.click().catch(function() {});
+      await this.page.evaluate(function(text) {
+        const el = document.querySelector('#prompt-textarea') || document.querySelector('div.ProseMirror[contenteditable="true"]') || document.activeElement;
+        if (!el) return;
+        el.focus();
+        if (el.tagName === 'TEXTAREA') { el.value = text; el.dispatchEvent(new Event('input', { bubbles: true })); return; }
+        if (el.isContentEditable) {
+          el.innerHTML = '';
+          el.textContent = text;
+          el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
+        }
+      }, prompt);
+      await this.page.waitForTimeout(200);
+      current = await this.getComposerText();
     }
-    return this.getComposerText();
+    return current;
   }
   _normalize(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
   async verifyPromptExact(expected) {
@@ -185,28 +171,12 @@ class ChatGPTAdapter {
     const nAct = this._normalize(actual);
     return nAct === nExp || nAct.indexOf(nExp.slice(0, 120)) !== -1;
   }
-  async openPlusMenu() {
-    const clicked = await this.clickAny(SELECTORS.plusButton, { timeout: 8000 });
-    if (!clicked) { this.log.warn('Plus button not found'); return false; }
-    await this.page.waitForTimeout(600);
-    return true;
-  }
-  async selectPluginsIfAvailable() {
-    const found = await this.waitForAny(SELECTORS.pluginsOption, { timeout: 4000 });
-    if (found) { await found.element.click().catch(function() {}); await this.page.waitForTimeout(400); return true; }
-    return false;
-  }
-  async selectThinkingIfAvailable() {
-    const found = await this.waitForAny(SELECTORS.thinkingOption, { timeout: 4000 });
-    if (found) { await found.element.click().catch(function() {}); await this.page.waitForTimeout(400); return true; }
-    return false;
-  }
   async sendMessage() {
     const send = await this.waitForAny(SELECTORS.sendButton, { timeout: 8000 });
     if (send) {
       const disabled = await send.element.isDisabled().catch(function() { return false; });
       if (disabled) await this.page.waitForTimeout(1200);
-      try { await send.element.click({ timeout: 5000 }); return 'click'; } catch (e) { this.log.warn('Send click failed: ' + e.message); }
+      try { await send.element.click({ timeout: 5000 }); return 'click'; } catch (e) {}
       try { await send.element.click({ force: true, timeout: 3000 }); return 'force-click'; } catch (e2) {}
     }
     try { await this.page.keyboard.press('Control+Enter'); return 'ctrl-enter'; } catch (e3) {}
@@ -216,11 +186,9 @@ class ChatGPTAdapter {
   async _collectUserText() {
     return this._normalize(await this.page.evaluate(function() {
       const parts = [];
-      const sels = ['[data-message-author-role="user"]', 'div[data-message-author-role="user"]', '[data-testid*="user-message"]', 'article[data-turn="user"]'];
-      for (let s = 0; s < sels.length; s++) {
-        const nodes = document.querySelectorAll(sels[s]);
-        for (let i = 0; i < nodes.length; i++) parts.push(nodes[i].innerText || nodes[i].textContent || '');
-      }
+      document.querySelectorAll('[data-message-author-role="user"]').forEach(function(n) {
+        parts.push(n.innerText || n.textContent || '');
+      });
       return parts.join('\n');
     }).catch(function() { return ''; }));
   }
@@ -233,32 +201,18 @@ class ChatGPTAdapter {
     let sawEmptyComposer = false;
     while (Date.now() - start < timeout) {
       const body = await this._collectUserText();
-      if (snippet && body.indexOf(snippet) !== -1) {
-        this.log.info('verifyUserMessage: matched snippet in user bubble');
-        return true;
-      }
-      if (body.indexOf(marker) !== -1) {
-        this.log.info('verifyUserMessage: matched ERMI marker');
-        return true;
-      }
+      if (snippet && body.indexOf(snippet) !== -1) return true;
+      if (body.indexOf(marker) !== -1) return true;
       const composerText = await this.getComposerText();
-      const composerEmpty = composerText !== null && this._normalize(composerText).length < 8;
-      if (composerEmpty) sawEmptyComposer = true;
+      if (composerText !== null && this._normalize(composerText).length < 8) sawEmptyComposer = true;
       const assistant = await this.page.evaluate(function() {
         return document.querySelectorAll('[data-message-author-role="assistant"]').length;
       }).catch(function() { return 0; });
-      if (sawEmptyComposer && assistant > 0) {
-        this.log.info('verifyUserMessage: empty composer + assistant reply');
-        return true;
-      }
+      if (sawEmptyComposer && assistant > 0) return true;
       const url = this.page.url();
-      if (/chatgpt\.com\/c\//i.test(url) && sawEmptyComposer && (body.length > 30 || assistant > 0)) {
-        this.log.info('verifyUserMessage: conversation URL + activity');
-        return true;
-      }
+      if (/chatgpt\.com\/c\//i.test(url) && sawEmptyComposer && (body.length > 30 || assistant > 0)) return true;
       await this.page.waitForTimeout(700);
     }
-    this.log.warn('verifyUserMessage: no hard evidence of submitted message');
     return false;
   }
   async getConversationUrl() {
@@ -275,10 +229,8 @@ class ChatGPTAdapter {
       if (/just a moment|verif(y|ying).{0,20}human|attention required/i.test(title || '')) return 'CLOUDFLARE';
     } catch (_) {}
     if (url.includes('/auth') || url.includes('login.openai') || url.includes('accounts.google')) return 'AUTH_PAGE';
-    const authed = await this.isAuthenticated();
-    if (!authed) return 'NOT_AUTHENTICATED';
-    const composer = await this.waitForAny(SELECTORS.composer, { timeout: 3000 });
-    if (composer) return 'COMPOSER_PRESENT';
+    if (!(await this.isAuthenticated())) return 'NOT_AUTHENTICATED';
+    if (await this.waitForAny(SELECTORS.composer, { timeout: 3000 })) return 'COMPOSER_PRESENT';
     return 'UNKNOWN';
   }
 }
