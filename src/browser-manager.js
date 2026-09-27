@@ -120,8 +120,9 @@ class BrowserManager {
       if (fs.existsSync(COOKIES_PATH)) {
         const raw = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'));
         if (Array.isArray(raw) && raw.length) {
-          const mapped = raw.map((c) => {
-            if (!c || !c.name) return null;
+          const transientCf = new Set(['__cf_bm', '_cfuvid', '__cflb']);
+          const skippedCf = raw.filter((c) => c && transientCf.has(String(c.name))).length;
+          const mapped = raw.filter((c) => c && !transientCf.has(String(c.name))).map((c) => {
             const ss = String(c.sameSite || 'lax').toLowerCase();
             const out = {
               name: c.name,
@@ -137,7 +138,7 @@ class BrowserManager {
           }).filter(Boolean);
           if (mapped.length) {
             await this.context.addCookies(mapped);
-            this.log.info('Re-applied ' + mapped.length + ' persisted cookies');
+            this.log.info('Re-applied ' + mapped.length + ' persisted auth/app cookies; skipped ' + skippedCf + ' transient Cloudflare cookies');
           }
         }
       }
