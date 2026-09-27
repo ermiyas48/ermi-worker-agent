@@ -193,26 +193,43 @@ class ChatGPTAdapter {
     }).catch(function() { return ''; }));
   }
   async verifyUserMessageAppeared(promptSnippet, timeout) {
-    timeout = timeout || 45000;
+    timeout = timeout || 50000;
     const start = Date.now();
     const nPrompt = this._normalize(promptSnippet);
-    const snippet = nPrompt.slice(0, 40);
-    const marker = 'ERMI Worker Agent';
-    let sawEmptyComposer = false;
+    const markers = [
+      nPrompt.slice(0, 50),
+      'ERMI Worker Agent',
+      'ERMI Discovery & Direction',
+      'OUTCOMES COMPLETED',
+      '10-outcome target',
+      'D2 RESERVOIR FILL',
+    ].filter(function(m) { return m && m.length >= 12; });
+
     while (Date.now() - start < timeout) {
-      const body = await this._collectUserText();
-      if (snippet && body.indexOf(snippet) !== -1) return true;
-      if (body.indexOf(marker) !== -1) return true;
-      const composerText = await this.getComposerText();
-      if (composerText !== null && this._normalize(composerText).length < 8) sawEmptyComposer = true;
-      const assistant = await this.page.evaluate(function() {
-        return document.querySelectorAll('[data-message-author-role="assistant"]').length;
-      }).catch(function() { return 0; });
-      if (sawEmptyComposer && assistant > 0) return true;
-      const url = this.page.url();
-      if (/chatgpt\.com\/c\//i.test(url) && sawEmptyComposer && (body.length > 30 || assistant > 0)) return true;
-      await this.page.waitForTimeout(700);
+      const userTexts = await this.page.evaluate(function() {
+        const out = [];
+        document.querySelectorAll('[data-message-author-role="user"]').forEach(function(n) {
+          out.push((n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim());
+        });
+        return out;
+      }).catch(function() { return []; });
+
+      for (let i = 0; i < userTexts.length; i++) {
+        const t = userTexts[i];
+        for (let m = 0; m < markers.length; m++) {
+          if (t.indexOf(markers[m]) !== -1 && t.length > 40) {
+            this.log.info('verifyUserMessage: HARD match in user bubble len=' + t.length);
+            return true;
+          }
+        }
+        if (t.indexOf('app.notion.com/p/') !== -1 && t.length > 200) {
+          this.log.info('verifyUserMessage: HARD match notion link in user bubble');
+          return true;
+        }
+      }
+      await this.page.waitForTimeout(800);
     }
+    this.log.warn('verifyUserMessage: no user-bubble hard match — NOT complete');
     return false;
   }
   async getConversationUrl() {
