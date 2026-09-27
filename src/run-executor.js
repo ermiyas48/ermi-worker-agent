@@ -42,18 +42,17 @@ class RunExecutor {
       return { ok: false, error: 'Another run is in progress', state: this.current ? this.current.state : 'LOCKED' };
     }
     const runId = uuidv4();
-    const forced = opts;
     let promptKind = 'worker';
     let prompt = config.workerPrompt || config.ermiPrompt;
-    if (forced && forced.kind === 'discovery') {
+    if (opts && opts.kind === 'discovery') {
       promptKind = 'discovery';
       prompt = config.discoveryPrompt || config.ermiPrompt;
-    } else if (forced && forced.kind === 'worker') {
+    } else if (opts && opts.kind === 'worker') {
       promptKind = 'worker';
       prompt = config.workerPrompt || config.ermiPrompt;
-    } else if (forced && forced.prompt) {
-      promptKind = forced.kind || 'custom';
-      prompt = forced.prompt;
+    } else if (opts && opts.prompt) {
+      promptKind = opts.kind || 'custom';
+      prompt = opts.prompt;
     } else {
       const next = getNextPrompt();
       promptKind = next.kind;
@@ -91,7 +90,6 @@ class RunExecutor {
       this._transition(STATES.CHATGPT_READY);
       let pageState = await adapter.detectPageState();
       if (pageState === 'CLOUDFLARE') {
-        this.log.warn('CF challenge — wait/reload cycle');
         for (let i = 0; i < 4; i++) {
           await page.waitForTimeout(3000);
           try { await page.mouse.move(100 + i * 30, 120 + i * 20); } catch (e) {}
@@ -102,18 +100,13 @@ class RunExecutor {
       }
       let composer = await adapter.waitForComposer(12000);
       if (!composer) {
-        this.log.warn('Composer slow — reload once');
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
         await page.waitForTimeout(2000);
         composer = await adapter.waitForComposer(15000);
       }
       pageState = await adapter.detectPageState();
-      const hardLogin = pageState === 'AUTH_PAGE' || (pageState === 'NOT_AUTHENTICATED' && !composer);
-      if (hardLogin && !composer) {
-        this._transition(STATES.REAUTH_REQUIRED, {
-          error: 'ChatGPT session needs re-authentication.',
-          message: 'ChatGPT session needs re-authentication. Re-import cookies via /setup/cookies.',
-        });
+      if ((pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') && !composer) {
+        this._transition(STATES.REAUTH_REQUIRED, { error: 'ChatGPT session needs re-authentication.', message: 'ChatGPT session needs re-authentication.' });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
@@ -126,39 +119,29 @@ class RunExecutor {
       this.log.info('openNewChat result=' + newChatOk);
       await page.waitForTimeout(600);
 
-      this._transition(STATES.COMPOSER_READY);
       composer = null;
-      if (typeof adapter.isComposerUsable === 'function') {
-        composer = await adapter.isComposerUsable(12000);
-      } else {
-        composer = await adapter.waitForComposer(12000);
-      }
+      if (typeof adapter.isComposerUsable === 'function') composer = await adapter.isComposerUsable(12000);
+      else composer = await adapter.waitForComposer(12000);
       if (!composer) {
         this.log.warn('Composer missing after openNewChat — bounded recovery');
         await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(2500);
         try { await page.keyboard.press('Escape'); } catch (e) {}
-        if (typeof adapter.isComposerUsable === 'function') {
-          composer = await adapter.isComposerUsable(15000);
-        } else {
-          composer = await adapter.waitForComposer(15000);
-        }
+        if (typeof adapter.isComposerUsable === 'function') composer = await adapter.isComposerUsable(20000);
+        else composer = await adapter.waitForComposer(20000);
       }
       if (!composer) {
-        this._transition(STATES.FAILED, {
-          error: 'Composer not ready after new chat',
-          message: 'FAILED — no usable composer after new chat + recovery',
-        });
+        this._transition(STATES.FAILED, { error: 'Composer not ready after new chat', message: 'FAILED — no usable composer after new chat + recovery' });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
         return;
       }
+      this._transition(STATES.COMPOSER_READY);
 
       this._transition(STATES.PROMPT_INSERTED);
       await adapter.insertPrompt(prompt);
       if (!(await adapter.verifyPromptExact(prompt))) {
-        this.log.warn('Prompt insert not exact — retry');
         await adapter.insertPrompt(prompt);
       }
 
@@ -188,7 +171,6 @@ class RunExecutor {
 
       const sentPrompt = prompt;
       const identityBefore = await adapter.getConversationIdentity().catch(function() { return {}; });
-
       this._transition(STATES.MESSAGE_SENT);
       const sendMethod = await adapter.sendMessage();
       this.log.info('Message sent via ' + sendMethod + ' promptHash=' + promptHash);
@@ -200,34 +182,22 @@ class RunExecutor {
       } catch (ve) {
         verifyResult = { ok: false, reason: 'verify_threw:' + ve.message, receipt: {} };
       }
-      const receipt = Object.assign({
-        runId: runId,
-        promptHash: promptHash,
-        sendMethod: sendMethod,
-        identityBefore: identityBefore,
-      }, verifyResult.receipt || {});
+      const receipt = Object.assign({ runId: runId, promptHash: promptHash, sendMethod: sendMethod, identityBefore: identityBefore }, verifyResult.receipt || {});
 
       if (!verifyResult.ok) {
         const reason = verifyResult.reason || 'verification_failed';
-        const hardFail = /composer|not found|auth|login/i.test(reason);
-        const state = hardFail ? STATES.FAILED : STATES.NEEDS_REVIEW;
-        this._transition(state, {
-          error: reason,
-          message: (hardFail ? 'FAILED' : 'NEEDS_REVIEW') + ' — ' + reason,
-          verificationReceipt: receipt,
-        });
+        const state = STATES.NEEDS_REVIEW;
+        this._transition(state, { error: reason, message: 'NEEDS_REVIEW — ' + reason, verificationReceipt: receipt });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
-        this.log.warn('Run ' + runId + ' ' + state + ' reason=' + reason);
         return;
       }
 
       this._transition(STATES.MESSAGE_VERIFIED, { verificationReceipt: receipt });
       const convUrl = receipt.conversationUrlAfter || receipt.conversationUrlBefore || null;
-      const doneMsg = 'COMPLETE — exact newest user message persisted. chat=' + (convUrl || receipt.conversationIdAfter || 'unknown');
       this._transition(STATES.COMPLETE, {
-        message: doneMsg,
+        message: 'COMPLETE — exact newest user message persisted. chat=' + (convUrl || receipt.conversationIdAfter || 'unknown'),
         conversationUrl: convUrl,
         conversationId: receipt.conversationIdAfter || null,
         verificationReceipt: receipt,
@@ -235,12 +205,7 @@ class RunExecutor {
       this.current.finishedAt = new Date().toISOString();
       saveRunState(this.current);
       this.bm.releaseLock(runId);
-      this.log.info('Run ' + runId + ' COMPLETE receipt=' + JSON.stringify({
-        promptHash: receipt.promptHash || promptHash,
-        conversationId: receipt.conversationIdAfter,
-        matchedHash: receipt.matchedHash,
-        reloadVerified: receipt.reloadVerified,
-      }));
+      this.log.info('Run ' + runId + ' COMPLETE reloadVerified=' + receipt.reloadVerified + ' matchedHash=' + receipt.matchedHash);
     } catch (err) {
       this.log.error('Run ' + runId + ' failed: ' + err.message);
       if (this.current && this.current.id === runId) {
