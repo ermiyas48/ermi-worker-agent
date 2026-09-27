@@ -138,7 +138,7 @@ class RunExecutor {
       this._transition(STATES.PROMPT_INSERTED);
       await adapter.insertPrompt(prompt);
       if (!(await adapter.verifyPromptExact(prompt))) {
-        this.log.warn('Prompt verification soft-fail — retry insert');
+        this.log.warn('Prompt insert soft-fail — retry');
         await adapter.insertPrompt(prompt);
       }
 
@@ -166,30 +166,61 @@ class RunExecutor {
         }
       }
 
+      const sentPrompt = prompt;
+      const identityBefore = await adapter.getConversationIdentity().catch(function() { return {}; });
+
       this._transition(STATES.MESSAGE_SENT);
       const sendMethod = await adapter.sendMessage();
-      this.log.info('Message sent via ' + sendMethod);
-      await new Promise(function(r) { setTimeout(r, 1200); });
+      this.log.info('Message sent via ' + sendMethod + ' promptHash=' + promptHash);
+      await new Promise(function(r) { setTimeout(r, 1500); });
 
-      const appeared = await adapter.verifyUserMessageAppeared(prompt, 45000);
-      if (!appeared) {
-        this._transition(STATES.NEEDS_REVIEW, { error: 'Could not verify user message after send', message: 'NEEDS_REVIEW — no visible user message in chat' });
+      let verifyResult;
+      try {
+        verifyResult = await adapter.verifySendPersisted(sentPrompt, { timeout: 55000 });
+      } catch (ve) {
+        verifyResult = { ok: false, reason: 'verify_threw:' + ve.message, receipt: {} };
+      }
+      const receipt = Object.assign({
+        runId: runId,
+        promptHash: promptHash,
+        sendMethod: sendMethod,
+        identityBefore: identityBefore,
+      }, verifyResult.receipt || {});
+
+      if (!verifyResult.ok) {
+        const reason = verifyResult.reason || 'verification_failed';
+        const hardFail = /composer|not found|auth|login/i.test(reason);
+        const state = hardFail ? STATES.FAILED : STATES.NEEDS_REVIEW;
+        this._transition(state, {
+          error: reason,
+          message: (hardFail ? 'FAILED' : 'NEEDS_REVIEW') + ' — ' + reason,
+          verificationReceipt: receipt,
+        });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
+        this.log.warn('Run ' + runId + ' ' + state + ' reason=' + reason);
         return;
       }
-      this._transition(STATES.MESSAGE_VERIFIED);
-      let convUrl = null;
-      try { convUrl = await adapter.getConversationUrl(); } catch (e) {}
-      const doneMsg = convUrl
-        ? ('ERMI prompt submitted and verified. chat=' + convUrl)
-        : 'ERMI prompt submitted and verified successfully';
-      this._transition(STATES.COMPLETE, { message: doneMsg, conversationUrl: convUrl });
+
+      this._transition(STATES.MESSAGE_VERIFIED, { verificationReceipt: receipt });
+      const convUrl = receipt.conversationUrlAfter || receipt.conversationUrlBefore || null;
+      const doneMsg = 'COMPLETE — exact newest user message persisted. chat=' + (convUrl || receipt.conversationIdAfter || 'unknown');
+      this._transition(STATES.COMPLETE, {
+        message: doneMsg,
+        conversationUrl: convUrl,
+        conversationId: receipt.conversationIdAfter || null,
+        verificationReceipt: receipt,
+      });
       this.current.finishedAt = new Date().toISOString();
       saveRunState(this.current);
       this.bm.releaseLock(runId);
-      this.log.info('Run ' + runId + ' COMPLETE ' + (convUrl || ''));
+      this.log.info('Run ' + runId + ' COMPLETE receipt=' + JSON.stringify({
+        promptHash: receipt.promptHash || promptHash,
+        conversationId: receipt.conversationIdAfter,
+        matchedHash: receipt.matchedHash,
+        reloadVerified: receipt.reloadVerified,
+      }));
     } catch (err) {
       this.log.error('Run ' + runId + ' failed: ' + err.message);
       if (this.current && this.current.id === runId) {
