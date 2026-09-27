@@ -3,7 +3,18 @@ const crypto = require('crypto');
 const { config } = require('./config');
 
 const SELECTORS = {
-  composer: ['#prompt-textarea', 'div[contenteditable="true"][id="prompt-textarea"]', 'textarea[data-id="root"]', 'div[contenteditable="true"][data-placeholder]', '[data-testid="prompt-textarea"]', 'div.ProseMirror[contenteditable="true"]', 'div[contenteditable="true"][role="textbox"]'],
+  composer: [
+    '#prompt-textarea',
+    'div[contenteditable="true"][id="prompt-textarea"]',
+    'textarea[data-id="root"]',
+    'textarea[placeholder="Ask ChatGPT"]',
+    'textarea[placeholder*="Ask ChatGPT"]',
+    'textarea[aria-label="Chat with ChatGPT"]',
+    'div[contenteditable="true"][data-placeholder]',
+    '[data-testid="prompt-textarea"]',
+    'div.ProseMirror[contenteditable="true"]',
+    'div[contenteditable="true"][role="textbox"]'
+  ],
   sendButton: [
     'button[data-testid="send-button"]',
     'button[data-testid="composer-send-button"]',
