@@ -86,12 +86,34 @@ class RunExecutor {
 
       this._transition(STATES.CHATGPT_LOADING);
       await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(2500);
 
       this._transition(STATES.CHATGPT_READY);
-      const pageState = await adapter.detectPageState();
-      if (pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED' || pageState === 'CLOUDFLARE') {
-        this._transition(STATES.REAUTH_REQUIRED, { error: 'ChatGPT session needs re-authentication.', message: 'ChatGPT session needs re-authentication.' });
+      let pageState = await adapter.detectPageState();
+      if (pageState === 'CLOUDFLARE') {
+        this.log.warn('CF challenge — wait/reload cycle');
+        for (let i = 0; i < 4; i++) {
+          await page.waitForTimeout(3000);
+          try { await page.mouse.move(100 + i * 30, 120 + i * 20); } catch (e) {}
+          pageState = await adapter.detectPageState();
+          if (pageState !== 'CLOUDFLARE') break;
+          if (i === 2) await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
+        }
+      }
+      let composer = await adapter.waitForComposer(12000);
+      if (!composer) {
+        this.log.warn('Composer slow — reload once');
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
+        await page.waitForTimeout(2000);
+        composer = await adapter.waitForComposer(15000);
+      }
+      pageState = await adapter.detectPageState();
+      const hardLogin = pageState === 'AUTH_PAGE' || (pageState === 'NOT_AUTHENTICATED' && !composer);
+      if (hardLogin && !composer) {
+        this._transition(STATES.REAUTH_REQUIRED, {
+          error: 'ChatGPT session needs re-authentication.',
+          message: 'ChatGPT session needs re-authentication. Re-import cookies via /setup/cookies.',
+        });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
@@ -104,7 +126,7 @@ class RunExecutor {
       await page.waitForTimeout(500);
 
       this._transition(STATES.COMPOSER_READY);
-      let composer = await adapter.waitForComposer(15000);
+      composer = await adapter.waitForComposer(15000);
       if (!composer) {
         this.log.warn('Composer missing after new chat — hard reload');
         await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
