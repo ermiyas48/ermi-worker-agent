@@ -1,7 +1,7 @@
-FROM mcr.microsoft.com/playwright:v1.48.0-jammy
+FROM mcr.microsoft.com/playwright:v1.63.0-jammy
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev || npm install --omit=dev
+RUN npm install --omit=dev && node -e "console.log('Playwright runtime version:', require('playwright/package.json').version)"
 COPY . .
 ENV PROFILE_PATH=/data/profiles/chatgpt
 ENV DATA_PATH=/data/state
