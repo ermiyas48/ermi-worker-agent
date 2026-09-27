@@ -126,14 +126,27 @@ class RunExecutor {
           if (pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') break;
         }
         if (!authConfirmed) {
-          this._transition(STATES.NEEDS_REVIEW, {
-            error: 'ChatGPT authentication state not confirmed',
-            message: 'NEEDS_REVIEW — ChatGPT page state remained unknown after bounded probe'
-          });
-          this.current.finishedAt = new Date().toISOString();
-          saveRunState(this.current);
-          this.bm.releaseLock(runId);
-          return;
+          let uiLooksNonAuth = false;
+          try {
+            const currentUrl = page.url();
+            const currentTitle = await page.title();
+            uiLooksNonAuth = /\/auth|login\.openai\.com|accounts\.google/i.test(currentUrl || '')
+              || /just a moment|verif(y|ying).{0,20}human|attention required/i.test(currentTitle || '');
+          } catch (e) {}
+
+          if (isSetupComplete() && !uiLooksNonAuth) {
+            this.log.warn('Auth UI not observed; using persisted authenticated session and proceeding to New Chat');
+            authConfirmed = true;
+          } else {
+            this._transition(STATES.NEEDS_REVIEW, {
+              error: 'ChatGPT authentication state not confirmed',
+              message: 'NEEDS_REVIEW — ChatGPT page state remained unknown after bounded probe'
+            });
+            this.current.finishedAt = new Date().toISOString();
+            saveRunState(this.current);
+            this.bm.releaseLock(runId);
+            return;
+          }
         }
       }
 
