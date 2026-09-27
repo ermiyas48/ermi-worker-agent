@@ -91,13 +91,22 @@ class RunExecutor {
       let pageState = await adapter.detectPageState();
 
       if (pageState === 'CLOUDFLARE') {
-        for (let i = 0; i < 4; i++) {
-          await page.waitForTimeout(2500);
-          try { await page.mouse.move(100 + i * 30, 120 + i * 20); } catch (e) {}
+        this.log.warn('CF challenge — bounded recovery window');
+        for (let i = 0; i < 8; i++) {
+          await page.waitForTimeout(3000);
+          try { await page.mouse.move(100 + i * 25, 120 + i * 15); } catch (e) {}
           pageState = await adapter.detectPageState();
-          if (pageState !== 'CLOUDFLARE') break;
-          if (i === 2) {
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
+          if (pageState !== 'CLOUDFLARE') {
+            this.log.info('CF challenge cleared after attempt=' + (i + 1));
+            break;
+          }
+          if (i === 2 || i === 5) {
+            this.log.warn('CF challenge still present — reloading attempt=' + (i + 1));
+            try {
+              await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 });
+            } catch (e) {
+              this.log.warn('CF reload failed: ' + e.message);
+            }
           }
         }
       }
