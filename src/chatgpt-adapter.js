@@ -1,4 +1,5 @@
 'use strict';
+const crypto = require('crypto');
 const { config } = require('./config');
 
 const SELECTORS = {
@@ -26,9 +27,6 @@ const SELECTORS = {
   loginButton: ['button[data-testid="login-button"]', 'button:has-text("Log in")', 'button:has-text("Sign up")'],
   userMenu: ['button[data-testid="profile-button"]', 'button[aria-label*="Open profile"]', 'nav button[aria-haspopup="menu"]'],
   userMessage: ['[data-message-author-role="user"]', 'div[data-message-author-role="user"]', 'div[data-testid*="user-message"]'],
-  pluginsOption: ['div[role="menuitem"]:has-text("Plugins")', 'button:has-text("Plugins")'],
-  thinkingOption: ['div[role="menuitem"]:has-text("Thinking")', 'button:has-text("Thinking")'],
-  toolsMenu: ['button[aria-label*="Model"]', 'button[aria-label*="GPT"]'],
 };
 
 class ChatGPTAdapter {
@@ -167,8 +165,8 @@ class ChatGPTAdapter {
   async verifyPromptExact(expected) {
     const actual = await this.getComposerText();
     if (!actual) return false;
-    const nExp = this._normalize(expected);
-    const nAct = this._normalize(actual);
+    const nExp = this.normalizePromptText(expected);
+    const nAct = this.normalizePromptText(actual);
     return nAct === nExp || nAct.indexOf(nExp.slice(0, 120)) !== -1;
   }
   async sendMessage() {
@@ -183,60 +181,173 @@ class ChatGPTAdapter {
     await this.page.keyboard.press('Enter');
     return 'enter';
   }
-  async _collectUserText() {
-    return this._normalize(await this.page.evaluate(function() {
-      const parts = [];
-      document.querySelectorAll('[data-message-author-role="user"]').forEach(function(n) {
-        parts.push(n.innerText || n.textContent || '');
-      });
-      return parts.join('\n');
-    }).catch(function() { return ''; }));
+  normalizePromptText(s) {
+    if (s == null) return '';
+    let t = String(s);
+    try { t = t.normalize('NFC'); } catch (e) {}
+    t = t.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    t = t.trim();
+    t = t.replace(/[ \t\f\v]+/g, ' ');
+    t = t.replace(/\n{3,}/g, '\n\n');
+    return t;
   }
-  async verifyUserMessageAppeared(promptSnippet, timeout) {
-    timeout = timeout || 50000;
-    const start = Date.now();
-    const nPrompt = this._normalize(promptSnippet);
-    const markers = [
-      nPrompt.slice(0, 50),
-      'ERMI Worker Agent',
-      'ERMI Discovery & Direction',
-      'OUTCOMES COMPLETED',
-      '10-outcome target',
-      'D2 RESERVOIR FILL',
-    ].filter(function(m) { return m && m.length >= 12; });
-
-    while (Date.now() - start < timeout) {
-      const userTexts = await this.page.evaluate(function() {
-        const out = [];
-        document.querySelectorAll('[data-message-author-role="user"]').forEach(function(n) {
-          out.push((n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim());
-        });
-        return out;
-      }).catch(function() { return []; });
-
-      for (let i = 0; i < userTexts.length; i++) {
-        const t = userTexts[i];
-        for (let m = 0; m < markers.length; m++) {
-          if (t.indexOf(markers[m]) !== -1 && t.length > 40) {
-            this.log.info('verifyUserMessage: HARD match in user bubble len=' + t.length);
-            return true;
-          }
-        }
-        if (t.indexOf('app.notion.com/p/') !== -1 && t.length > 200) {
-          this.log.info('verifyUserMessage: HARD match notion link in user bubble');
-          return true;
-        }
-      }
-      await this.page.waitForTimeout(800);
-    }
-    this.log.warn('verifyUserMessage: no user-bubble hard match — NOT complete');
-    return false;
-  }
-  async getConversationUrl() {
+  async getConversationIdentity() {
+    const result = { url: null, conversationId: null, title: null };
     try {
       const url = this.page.url();
-      if (/chatgpt\.com\/c\//i.test(url)) return url;
+      result.url = url;
+      const m = url.match(/chatgpt\.com\/c\/([A-Za-z0-9_:\-]+)/i);
+      if (m) result.conversationId = m[1];
     } catch (e) {}
+    try { result.title = await this.page.title(); } catch (e) {}
+    try {
+      const id = await this.page.evaluate(function() {
+        const el = document.querySelector('[data-conversation-id]');
+        if (el) return el.getAttribute('data-conversation-id');
+        const active = document.querySelector('a[href*="/c/"][aria-current], nav a[href*="/c/"]');
+        if (active) {
+          const hm = (active.getAttribute('href') || '').match(/\/c\/([A-Za-z0-9_:\-]+)/);
+          if (hm) return hm[1];
+        }
+        return null;
+      });
+      if (id && !result.conversationId) result.conversationId = id;
+    } catch (e) {}
+    return result;
+  }
+  async getVisibleUserTurns() {
+    const self = this;
+    const turns = await this.page.evaluate(function() {
+      const nodes = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
+      const out = [];
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i];
+        const style = window.getComputedStyle(n);
+        const rect = n.getBoundingClientRect();
+        const visible = style && style.display !== 'none' && style.visibility !== 'hidden'
+          && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+        let inNav = false;
+        let p = n.parentElement;
+        while (p) {
+          const tag = (p.tagName || '').toLowerCase();
+          const role = p.getAttribute('role') || '';
+          if (tag === 'nav' || role === 'navigation') { inNav = true; break; }
+          p = p.parentElement;
+        }
+        if (inNav) continue;
+        const text = (n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text) continue;
+        out.push({ text: text, visible: !!visible, index: i });
+      }
+      return out;
+    }).catch(function() { return []; });
+    return turns.map(function(t) {
+      return { text: t.text, normalized: self.normalizePromptText(t.text), visible: t.visible, index: t.index };
+    });
+  }
+  async getNewestVisibleUserTurn() {
+    const turns = await this.getVisibleUserTurns();
+    const visible = turns.filter(function(t) { return t.visible; });
+    if (!visible.length) return null;
+    return visible[visible.length - 1];
+  }
+  async verifySendPersisted(sentPrompt, opts) {
+    opts = opts || {};
+    const timeout = opts.timeout || 55000;
+    const expected = this.normalizePromptText(sentPrompt);
+    const expectedHash = crypto.createHash('sha256').update(expected).digest('hex').slice(0, 16);
+    const start = Date.now();
+    const receipt = {
+      expectedHash: expectedHash,
+      conversationIdBefore: null,
+      conversationUrlBefore: null,
+      conversationIdAfter: null,
+      conversationUrlAfter: null,
+      matchedHash: null,
+      newestTurnLength: null,
+      reloadVerified: false,
+      verifiedAt: null,
+      reason: null,
+    };
+    const idBefore = await this.getConversationIdentity();
+    receipt.conversationIdBefore = idBefore.conversationId;
+    receipt.conversationUrlBefore = idBefore.url;
+
+    let matched = false;
+    while (Date.now() - start < timeout) {
+      const newest = await this.getNewestVisibleUserTurn();
+      if (newest && newest.visible) {
+        receipt.newestTurnLength = newest.normalized.length;
+        if (newest.normalized === expected) {
+          matched = true;
+          receipt.matchedHash = crypto.createHash('sha256').update(newest.normalized).digest('hex').slice(0, 16);
+          this.log.info('verifySend: exact newest-user match hash=' + receipt.matchedHash);
+          break;
+        }
+      }
+      await this.page.waitForTimeout(700);
+    }
+    if (!matched) {
+      receipt.reason = 'newest_user_turn_not_exact_match';
+      return { ok: false, reason: receipt.reason, receipt: receipt };
+    }
+
+    const idMid = await this.getConversationIdentity();
+    if (!idMid.conversationId && !idMid.url) {
+      receipt.reason = 'no_conversation_identity_after_send';
+      return { ok: false, reason: receipt.reason, receipt: receipt };
+    }
+    receipt.conversationIdAfter = idMid.conversationId;
+    receipt.conversationUrlAfter = idMid.url;
+
+    const reloadTarget = idMid.url && /chatgpt\.com\/c\//i.test(idMid.url)
+      ? idMid.url
+      : (idMid.conversationId ? ('https://chatgpt.com/c/' + idMid.conversationId) : null);
+    if (!reloadTarget) {
+      receipt.reason = 'no_stable_conversation_url_for_reload';
+      return { ok: false, reason: receipt.reason, receipt: receipt };
+    }
+
+    try {
+      await this.page.goto(reloadTarget, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await this.page.waitForTimeout(2500);
+      const reloadDeadline = Date.now() + 25000;
+      let reloadMatch = false;
+      while (Date.now() < reloadDeadline) {
+        const idAfter = await this.getConversationIdentity();
+        const sameId = (idMid.conversationId && idAfter.conversationId && idMid.conversationId === idAfter.conversationId)
+          || (idMid.url && idAfter.url && idMid.url.split('?')[0] === idAfter.url.split('?')[0]);
+        if (!sameId) { await this.page.waitForTimeout(800); continue; }
+        const newest = await this.getNewestVisibleUserTurn();
+        if (newest && newest.visible && newest.normalized === expected) {
+          reloadMatch = true;
+          receipt.reloadVerified = true;
+          receipt.conversationIdAfter = idAfter.conversationId || receipt.conversationIdAfter;
+          receipt.conversationUrlAfter = idAfter.url || receipt.conversationUrlAfter;
+          break;
+        }
+        await this.page.waitForTimeout(800);
+      }
+      if (!reloadMatch) {
+        receipt.reason = 'reload_persistence_failed';
+        return { ok: false, reason: receipt.reason, receipt: receipt };
+      }
+    } catch (e) {
+      receipt.reason = 'reload_error:' + (e && e.message ? e.message : String(e));
+      return { ok: false, reason: receipt.reason, receipt: receipt };
+    }
+
+    receipt.verifiedAt = new Date().toISOString();
+    receipt.reason = 'ok';
+    return { ok: true, reason: 'ok', receipt: receipt };
+  }
+  async verifyUserMessageAppeared(promptSnippet, timeout) {
+    const result = await this.verifySendPersisted(promptSnippet, { timeout: timeout || 50000 });
+    return !!result.ok;
+  }
+  async getConversationUrl() {
+    const id = await this.getConversationIdentity();
+    if (id.url && /chatgpt\.com\/c\//i.test(id.url)) return id.url;
     return null;
   }
   async detectPageState() {
