@@ -20,7 +20,7 @@ function toPlaywrightCookies(raw) {
       value: String(c.value),
       path: c.path || '/',
       httpOnly: !!c.httpOnly,
-      secure: c.secure !== false,
+      secure: typeof c.secure === 'boolean' ? c.secure : true,
       sameSite: mapSameSite(c.sameSite),
     };
     if (c.domain) cookie.domain = c.domain;
@@ -100,19 +100,42 @@ class SetupController {
     }
     this.setupInProgress = true;
     try {
-      const { context, page } = await this.bm.ensureBrowser({ headless: true });
+      const { context, page } = await this.bm.ensureBrowser({ forceRestart: true });
       try {
-        const existing = await context.cookies(['https://chatgpt.com', 'https://openai.com']);
-        if (existing.length) {
-          await context.clearCookies();
+        await context.clearCookies();
+      } catch (e) {
+        this.log.warn('clearCookies: ' + e.message);
+      }
+      const normalized = pwCookies.map((c) => {
+        const out = { ...c };
+        if (out.sameSite === 'None' && !out.secure) out.secure = true;
+        return out;
+      });
+      let applied = 0;
+      const errors = [];
+      try {
+        await context.addCookies(normalized);
+        applied = normalized.length;
+      } catch (e) {
+        this.log.warn('bulk addCookies failed, trying one-by-one: ' + e.message);
+        for (const c of normalized) {
+          try {
+            await context.addCookies([c]);
+            applied++;
+          } catch (e2) {
+            errors.push(c.name + ': ' + e2.message);
+          }
         }
-      } catch {}
-      await context.addCookies(pwCookies);
-      this.log.info('Imported ' + pwCookies.length + ' cookies into profile');
+      }
+      this.log.info('Imported ' + applied + '/' + normalized.length + ' cookies into profile');
 
-      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(4000);
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+      for (let i = 0; i < 15; i++) {
+        await page.waitForTimeout(2000);
+        const t = await page.title().catch(() => '');
+        if (!/just a moment|attention required|cloudflare/i.test(t)) break;
+      }
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
       await page.waitForTimeout(3000);
 
       const info = await this._pageInfo(page);
@@ -129,17 +152,18 @@ class SetupController {
           authenticated: true,
           setupComplete: true,
           message: 'Cookies imported and session authenticated. Setup complete.',
-          cookiesApplied: pwCookies.length,
+          cookiesApplied: applied,
           page: info,
           pageState,
         };
       }
 
-      await page.goto('https://chatgpt.com/', { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
-      await page.waitForTimeout(3000);
+      await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      await page.waitForTimeout(5000);
       const info2 = await this._pageInfo(page);
+      const pageState2 = await adapter.detectPageState();
       const authed2 = await adapter.isAuthenticated();
-      this.lastAuthCheck = { at: new Date().toISOString(), authenticated: authed2, pageState: await adapter.detectPageState() };
+      this.lastAuthCheck = { at: new Date().toISOString(), authenticated: authed2, pageState: pageState2 };
       if (authed2) {
         markSetupComplete();
         this.setupInProgress = false;
@@ -148,21 +172,24 @@ class SetupController {
           authenticated: true,
           setupComplete: true,
           message: 'Cookies imported and session authenticated (second check). Setup complete.',
-          cookiesApplied: pwCookies.length,
+          cookiesApplied: applied,
           page: info2,
+          pageState: pageState2,
         };
       }
 
       let hint = 'Cookies applied but session not recognized as logged-in.';
       if (/just a moment|cloudflare|attention required/i.test((info2.title || '') + (info2.bodyPreview || ''))) {
-        hint = 'Cookies applied but Cloudflare still blocks this datacenter IP. Session cookies alone may not pass CF; a residential proxy may still be required.';
+        hint = 'Cookies applied but Cloudflare challenge still present. Ensure Termux proxy is ACTIVE; headless Chrome may still be challenged.';
       }
+      this.setupInProgress = false;
       return {
         ok: false,
         authenticated: false,
         setupComplete: false,
         message: hint,
-        cookiesApplied: pwCookies.length,
+        cookiesApplied: applied,
+        cookieErrors: errors.slice(0, 10),
         page: info2,
         lastAuthCheck: this.lastAuthCheck,
       };
@@ -191,8 +218,14 @@ class SetupController {
         return { authenticated: true, setupComplete: true, message: 'Authenticated.', page: info, pageState };
       }
       let hint = 'Not authenticated yet.';
-      if (/cloudflare|just a moment|attention required/i.test(info.title + ' ' + info.bodyPreview)) {
-        hint = 'Cloudflare challenge on Railway IP. Use POST /setup/cookies with a fresh export from a logged-in browser.';
+      const { getProxyServer } = require('./config');
+      const px = getProxyServer();
+      if (/cloudflare|just a moment|attention required/i.test(info.title + ' ' + (info.bodyPreview || ''))) {
+        if (px) {
+          hint = 'Cloudflare challenge (headless). Residential proxy is active. Import fresh ChatGPT cookies via /setup.';
+        } else {
+          hint = 'Cloudflare challenge and no valid proxy. Ensure Termux is ACTIVE, then import cookies.';
+        }
       }
       return { authenticated: false, setupComplete: false, message: hint, page: info, pageState };
     } catch (e) {
@@ -226,7 +259,7 @@ pre{white-space:pre-wrap;font-size:.8rem;background:#f4f4f5;padding:.75rem;borde
 img{max-width:100%;border:1px solid #ddd;border-radius:8px;margin-top:.5rem}
 </style></head><body>
 <h1>ERMI Setup</h1>
-<p>Railway is blocked by Cloudflare for interactive login. Export cookies from a logged-in ChatGPT browser and paste below.</p>
+<p>Export cookies from a logged-in ChatGPT browser and paste below. Keep Termux ACTIVE (residential proxy).</p>
 <div class="card">
 <div id="status" class="status wait">Checking…</div>
 <div id="detail"></div>
@@ -256,6 +289,7 @@ async function refresh(){
 document.getElementById('btnImport').onclick=async()=>{
   let body;
   try{body=JSON.parse(document.getElementById('cookies').value);}catch(e){alert('Invalid JSON');return;}
+  document.getElementById('detail').textContent='Importing (may take up to 2 min)…';
   const r=await fetch('/setup/cookies',{method:'POST',headers:headers(),body:JSON.stringify(body)});
   const j=await r.json();
   document.getElementById('detail').textContent=j.message||j.error||JSON.stringify(j);
