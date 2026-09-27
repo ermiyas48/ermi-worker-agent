@@ -111,8 +111,37 @@ class ChatGPTAdapter {
     }
   }
   async waitForComposer(timeout) {
-    const found = await this.waitForAny(SELECTORS.composer, { timeout: timeout || 20000 });
-    return found;
+    return this.waitForAny(SELECTORS.composer, { timeout: timeout || 20000 });
+  }
+  async openNewChat() {
+    const target = config.chatgptNewChatUrl || config.chatgptUrl || 'https://chatgpt.com/';
+    const attempts = 3;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const current = this.page.url();
+      let acted = false;
+      if (/chatgpt\.com/i.test(current)) {
+        const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 6000 });
+        if (clicked) {
+          acted = true;
+          this.log.info('New chat click attempt=' + attempt);
+        }
+      }
+      if (!acted) {
+        this.log.info('New chat via navigation attempt=' + attempt);
+        await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        acted = true;
+      }
+      await this.page.waitForTimeout(800);
+      await this.page.waitForLoadState('networkidle', { timeout: 12000 }).catch(function () {});
+      try { await this.page.keyboard.press('Escape'); } catch (e) {}
+      const composer = await this.waitForComposer(8000);
+      if (composer) {
+        this.log.info('Composer ready after new chat attempt=' + attempt);
+        return true;
+      }
+      this.log.warn('Composer not ready after new chat attempt=' + attempt);
+    }
+    return false;
   }
   async getComposerText() {
     const found = await this.waitForAny(SELECTORS.composer, { timeout: 5000 });
