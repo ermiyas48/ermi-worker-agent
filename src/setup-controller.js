@@ -100,8 +100,13 @@ class SetupController {
     }
     this.setupInProgress = true;
     try {
+      const { getProxyServer } = require('./config');
+      const px = getProxyServer();
+      if (!px) this.log.warn('No valid residential proxy — CF bypass unlikely');
+
       const { context, page } = await this.bm.ensureBrowser({ headless: true });
       try { await context.clearCookies(); } catch (e) { this.log.warn('clearCookies: ' + e.message); }
+
       const normalized = pwCookies.map((c) => {
         const out = { ...c };
         if (out.sameSite === 'None' && !out.secure) out.secure = true;
@@ -113,53 +118,75 @@ class SetupController {
         await context.addCookies(normalized);
         applied = normalized.length;
       } catch (e) {
-        this.log.warn('bulk addCookies failed, trying one-by-one: ' + e.message);
+        this.log.warn('bulk addCookies failed: ' + e.message);
         for (const c of normalized) {
           try { await context.addCookies([c]); applied++; }
           catch (e2) { errors.push(c.name + ': ' + e2.message); }
         }
       }
-      this.log.info('Imported ' + applied + '/' + normalized.length + ' cookies');
+      this.log.info('Imported ' + applied + '/' + normalized.length + ' cookies proxy=' + (px || 'none'));
 
-      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      for (let i = 0; i < 5; i++) {
-        await page.waitForTimeout(2000);
-        const t = await page.title().catch(() => '');
-        if (!/just a moment|attention required|cloudflare/i.test(t)) break;
+      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch((e) => {
+        this.log.warn('goto: ' + e.message);
+      });
+
+      const deadline = Date.now() + 55000;
+      while (Date.now() < deadline) {
+        const lastTitle = await page.title().catch(() => '');
+        const body = await page.evaluate(() => (document.body && document.body.innerText) || '').catch(() => '');
+        const blocked = /just a moment|attention required|checking your browser|enable javascript and cookies/i.test(lastTitle + ' ' + body);
+        if (!blocked) break;
+        this.log.info('CF still present title=' + lastTitle + ' — waiting');
+        try { await page.mouse.move(120 + Math.random() * 200, 160 + Math.random() * 100); } catch (e) {}
+        await page.waitForTimeout(2500);
       }
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
-      await page.waitForTimeout(2000);
 
-      const info = await this._pageInfo(page);
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+
       const adapter = new ChatGPTAdapter(page, this.log);
-      const pageState = await adapter.detectPageState();
-      const authed = await adapter.isAuthenticated();
+      let info = await this._pageInfo(page);
+      let pageState = await adapter.detectPageState();
+      let authed = await adapter.isAuthenticated();
       this.lastAuthCheck = { at: new Date().toISOString(), authenticated: authed, pageState };
 
       if (authed) {
         markSetupComplete();
         this.setupInProgress = false;
-        return { ok: true, authenticated: true, setupComplete: true, message: 'Cookies imported and session authenticated. Setup complete.', cookiesApplied: applied, page: info, pageState };
+        return {
+          ok: true, authenticated: true, setupComplete: true,
+          message: 'Cookies imported and session authenticated. Setup complete.',
+          cookiesApplied: applied, page: info, pageState,
+        };
       }
 
       await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
-      await page.waitForTimeout(3000);
-      const info2 = await this._pageInfo(page);
-      const pageState2 = await adapter.detectPageState();
-      const authed2 = await adapter.isAuthenticated();
-      this.lastAuthCheck = { at: new Date().toISOString(), authenticated: authed2, pageState: pageState2 };
-      if (authed2) {
+      await page.waitForTimeout(4000);
+      info = await this._pageInfo(page);
+      pageState = await adapter.detectPageState();
+      authed = await adapter.isAuthenticated();
+      this.lastAuthCheck = { at: new Date().toISOString(), authenticated: authed, pageState };
+
+      if (authed) {
         markSetupComplete();
         this.setupInProgress = false;
-        return { ok: true, authenticated: true, setupComplete: true, message: 'Cookies imported (second check). Setup complete.', cookiesApplied: applied, page: info2, pageState: pageState2 };
+        return {
+          ok: true, authenticated: true, setupComplete: true,
+          message: 'Cookies imported (second pass). Setup complete.',
+          cookiesApplied: applied, page: info, pageState,
+        };
       }
 
       let hint = 'Cookies applied but session not recognized as logged-in.';
-      if (/just a moment|cloudflare|attention required/i.test((info2.title || '') + (info2.bodyPreview || ''))) {
-        hint = 'Cookies applied but Cloudflare challenge still present. Keep Termux ACTIVE; headless Chrome is often challenged even on residential IP.';
+      if (/just a moment|cloudflare|attention required/i.test((info.title || '') + (info.bodyPreview || ''))) {
+        hint = 'Cloudflare challenge still present after cookie import (headless). Proxy=' + (px || 'none') + '.';
       }
       this.setupInProgress = false;
-      return { ok: false, authenticated: false, setupComplete: false, message: hint, cookiesApplied: applied, cookieErrors: errors.slice(0, 10), page: info2, lastAuthCheck: this.lastAuthCheck };
+      return {
+        ok: false, authenticated: false, setupComplete: false,
+        message: hint, cookiesApplied: applied, cookieErrors: errors.slice(0, 10),
+        page: info, lastAuthCheck: this.lastAuthCheck,
+      };
     } catch (e) {
       this.setupInProgress = false;
       return { ok: false, error: e.message };
@@ -254,7 +281,7 @@ async function refresh(){
 document.getElementById('btnImport').onclick=async()=>{
   let body;
   try{body=JSON.parse(document.getElementById('cookies').value);}catch(e){alert('Invalid JSON');return;}
-  document.getElementById('detail').textContent='Importing…';
+  document.getElementById('detail').textContent='Importing (up to ~90s)…';
   const r=await fetch('/setup/cookies',{method:'POST',headers:headers(),body:JSON.stringify(body)});
   const j=await r.json();
   document.getElementById('detail').textContent=j.message||j.error||JSON.stringify(j);
