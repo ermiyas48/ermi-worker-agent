@@ -33,6 +33,7 @@ const SELECTORS = {
     'button[aria-label="New Chat"]',
     'a[aria-label="New Chat"]',
     '[data-testid="new-chat-button"]',
+    'a[href="/?noauth_recent_chat_failed=1"]',
     'nav a[href="/"]',
     'a[href="/?model="]',
     'a[href="/"]',
@@ -121,43 +122,37 @@ class ChatGPTAdapter {
     const target = config.chatgptNewChatUrl || config.chatgptUrl || 'https://chatgpt.com/';
     const before = await this.getConversationIdentity().catch(function() { return { url: null, conversationId: null }; });
     const beforeIsConversation = !!(before && before.conversationId) || /chatgpt\.com\/c\//i.test((before && before.url) || '');
-    if (!beforeIsConversation && await this.isComposerUsable(3000)) {
-      this.log.info('Already on home/new-chat with usable composer');
-      return true;
+
+    if (!beforeIsConversation) {
+      const homeComposer = await this.isComposerUsable(2000);
+      if (homeComposer) {
+        this.log.info('Already on home/new-chat with usable composer');
+        return true;
+      }
     }
 
     for (let attempt = 1; attempt <= 3; attempt++) {
-      let acted = false;
-      let currentUrl = '';
-      try { currentUrl = this.page.url(); } catch (e) {}
-      const currentIsConversation = /chatgpt\.com\/c\//i.test(currentUrl);
-
-      if (currentIsConversation) {
-        try {
-          const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 6000 });
-          if (clicked) {
-            acted = true;
-            this.log.info('New chat click attempt=' + attempt);
-          }
-        } catch (e) {
-          this.log.warn('New chat click error: ' + e.message);
-        }
+      let clicked = false;
+      try {
+        clicked = await this.clickAny(SELECTORS.newChat, { timeout: 5000 });
+      } catch (e) {
+        this.log.warn('New chat click error attempt=' + attempt + ': ' + e.message);
       }
 
-      if (!acted) {
+      if (clicked) {
+        this.log.info('New chat click attempt=' + attempt);
+        await this.page.waitForTimeout(1000);
+        try { await this.page.keyboard.press('Escape'); } catch (e) {}
+      } else {
         this.log.info('New chat via navigation attempt=' + attempt);
         try {
           await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          acted = true;
         } catch (e) {
-          this.log.warn('New chat navigation failed: ' + e.message);
+          this.log.warn('New chat navigation failed attempt=' + attempt + ': ' + e.message);
         }
       }
 
-      try { await this.page.waitForLoadState('networkidle', { timeout: 10000 }); } catch (e) {}
-      await this.page.waitForTimeout(1200);
-      try { await this.page.keyboard.press('Escape'); } catch (e) {}
-
+      try { await this.page.waitForLoadState('domcontentloaded', { timeout: 8000 }); } catch (e) {}
       const usable = await this.isComposerUsable(12000);
       if (!usable) {
         this.log.warn('Composer not usable after new chat attempt=' + attempt);
@@ -167,7 +162,8 @@ class ChatGPTAdapter {
       const after = await this.getConversationIdentity().catch(function() { return { url: null, conversationId: null }; });
       const sameConversation = !!before.conversationId && !!after.conversationId &&
         before.conversationId === after.conversationId;
-      if (!sameConversation || !beforeIsConversation) {
+
+      if (!beforeIsConversation || !sameConversation) {
         this.log.info('New chat established with usable composer attempt=' + attempt);
         return true;
       }
