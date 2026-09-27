@@ -115,16 +115,12 @@ class ChatGPTAdapter {
   }
   async openNewChat() {
     const target = config.chatgptNewChatUrl || config.chatgptUrl || 'https://chatgpt.com/';
-    const attempts = 3;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
       const current = this.page.url();
       let acted = false;
       if (/chatgpt\.com/i.test(current)) {
         const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 6000 });
-        if (clicked) {
-          acted = true;
-          this.log.info('New chat click attempt=' + attempt);
-        }
+        if (clicked) { acted = true; this.log.info('New chat click attempt=' + attempt); }
       }
       if (!acted) {
         this.log.info('New chat via navigation attempt=' + attempt);
@@ -200,20 +196,11 @@ class ChatGPTAdapter {
   async selectPluginsIfAvailable() {
     const found = await this.waitForAny(SELECTORS.pluginsOption, { timeout: 4000 });
     if (found) { await found.element.click().catch(function() {}); await this.page.waitForTimeout(400); return true; }
-    this.log.info('Plugins option not found');
     return false;
   }
   async selectThinkingIfAvailable() {
     const found = await this.waitForAny(SELECTORS.thinkingOption, { timeout: 4000 });
     if (found) { await found.element.click().catch(function() {}); await this.page.waitForTimeout(400); return true; }
-    const tools = await this.waitForAny(SELECTORS.toolsMenu, { timeout: 3000 });
-    if (tools) {
-      await tools.element.click().catch(function() {});
-      await this.page.waitForTimeout(500);
-      const think = await this.waitForAny(SELECTORS.thinkingOption, { timeout: 3000 });
-      if (think) { await think.element.click().catch(function() {}); return true; }
-    }
-    this.log.info('Thinking option not found');
     return false;
   }
   async sendMessage() {
@@ -221,86 +208,67 @@ class ChatGPTAdapter {
     if (send) {
       const disabled = await send.element.isDisabled().catch(function() { return false; });
       if (disabled) await this.page.waitForTimeout(1200);
-      try {
-        await send.element.click({ timeout: 5000 });
-        return 'click';
-      } catch (e) {
-        this.log.warn('Send click failed: ' + e.message);
-      }
-      try {
-        await send.element.click({ force: true, timeout: 3000 });
-        return 'force-click';
-      } catch (e2) {
-        this.log.warn('Force send click failed: ' + e2.message);
-      }
+      try { await send.element.click({ timeout: 5000 }); return 'click'; } catch (e) { this.log.warn('Send click failed: ' + e.message); }
+      try { await send.element.click({ force: true, timeout: 3000 }); return 'force-click'; } catch (e2) {}
     }
-    try {
-      await this.page.keyboard.press('Control+Enter');
-      return 'ctrl-enter';
-    } catch (e3) {}
+    try { await this.page.keyboard.press('Control+Enter'); return 'ctrl-enter'; } catch (e3) {}
     await this.page.keyboard.press('Enter');
     return 'enter';
   }
   async _collectUserText() {
     return this._normalize(await this.page.evaluate(function() {
       const parts = [];
-      const sels = [
-        '[data-message-author-role="user"]',
-        'div[data-message-author-role="user"]',
-        '[data-testid*="user-message"]',
-        'article[data-turn="user"]',
-      ];
+      const sels = ['[data-message-author-role="user"]', 'div[data-message-author-role="user"]', '[data-testid*="user-message"]', 'article[data-turn="user"]'];
       for (let s = 0; s < sels.length; s++) {
         const nodes = document.querySelectorAll(sels[s]);
-        for (let i = 0; i < nodes.length; i++) {
-          parts.push(nodes[i].innerText || nodes[i].textContent || '');
-        }
-      }
-      const all = document.querySelectorAll('[data-message-author-role], article, [data-testid*="conversation-turn"]');
-      for (let i = 0; i < all.length; i++) {
-        parts.push(all[i].innerText || '');
+        for (let i = 0; i < nodes.length; i++) parts.push(nodes[i].innerText || nodes[i].textContent || '');
       }
       return parts.join('\n');
     }).catch(function() { return ''; }));
   }
   async verifyUserMessageAppeared(promptSnippet, timeout) {
-    timeout = timeout || 35000;
+    timeout = timeout || 45000;
     const start = Date.now();
     const nPrompt = this._normalize(promptSnippet);
-    const snippet = nPrompt.slice(0, 48);
+    const snippet = nPrompt.slice(0, 40);
     const marker = 'ERMI Worker Agent';
-    let emptyComposerHits = 0;
-
+    let sawEmptyComposer = false;
     while (Date.now() - start < timeout) {
       const body = await this._collectUserText();
-      if (snippet && body.indexOf(snippet) !== -1) return true;
-      if (body.indexOf(marker) !== -1) return true;
-      const firstLine = nPrompt.split('. ')[0].slice(0, 40);
-      if (firstLine.length > 15 && body.indexOf(firstLine) !== -1) return true;
-
-      const composerText = await this.getComposerText();
-      if (composerText !== null && this._normalize(composerText).length < 8) {
-        emptyComposerHits++;
-        if (emptyComposerHits >= 3) {
-          if (body.length > 20 || Date.now() - start > 4000) return true;
-        }
-      } else {
-        emptyComposerHits = 0;
+      if (snippet && body.indexOf(snippet) !== -1) {
+        this.log.info('verifyUserMessage: matched snippet in user bubble');
+        return true;
       }
-
+      if (body.indexOf(marker) !== -1) {
+        this.log.info('verifyUserMessage: matched ERMI marker');
+        return true;
+      }
+      const composerText = await this.getComposerText();
+      const composerEmpty = composerText !== null && this._normalize(composerText).length < 8;
+      if (composerEmpty) sawEmptyComposer = true;
       const assistant = await this.page.evaluate(function() {
         return document.querySelectorAll('[data-message-author-role="assistant"]').length;
       }).catch(function() { return 0; });
-      if (assistant > 0 && emptyComposerHits >= 1) return true;
-
-      await this.page.waitForTimeout(600);
+      if (sawEmptyComposer && assistant > 0) {
+        this.log.info('verifyUserMessage: empty composer + assistant reply');
+        return true;
+      }
+      const url = this.page.url();
+      if (/chatgpt\.com\/c\//i.test(url) && sawEmptyComposer && (body.length > 30 || assistant > 0)) {
+        this.log.info('verifyUserMessage: conversation URL + activity');
+        return true;
+      }
+      await this.page.waitForTimeout(700);
     }
-    const finalComposer = await this.getComposerText();
-    if (finalComposer !== null && this._normalize(finalComposer).length < 8) {
-      this.log.info('verifyUserMessage: soft-pass on empty composer');
-      return true;
-    }
+    this.log.warn('verifyUserMessage: no hard evidence of submitted message');
     return false;
+  }
+  async getConversationUrl() {
+    try {
+      const url = this.page.url();
+      if (/chatgpt\.com\/c\//i.test(url)) return url;
+    } catch (e) {}
+    return null;
   }
   async detectPageState() {
     const url = this.page.url();
