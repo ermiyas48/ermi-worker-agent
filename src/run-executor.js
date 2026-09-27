@@ -96,11 +96,19 @@ class RunExecutor {
       if (!verified) this.log.warn('Prompt verification soft-fail');
 
       this._transition(STATES.PLUS_MENU_OPEN);
-      const plusOpened = await adapter.openPlusMenu();
-      if (plusOpened) await adapter.selectPluginsIfAvailable();
+      try {
+        const plusOpened = await adapter.openPlusMenu();
+        if (plusOpened) await adapter.selectPluginsIfAvailable();
+      } catch (e) {
+        this.log.warn('Plus/plugins optional step: ' + e.message);
+      }
       this._transition(STATES.PLUGIN_STATE_CONFIRMED);
 
-      await adapter.selectThinkingIfAvailable();
+      try {
+        await adapter.selectThinkingIfAvailable();
+      } catch (e) {
+        this.log.warn('Thinking optional step: ' + e.message);
+      }
       this._transition(STATES.THINKING_STATE_CONFIRMED);
 
       this._transition(STATES.READY_TO_SEND);
@@ -112,19 +120,24 @@ class RunExecutor {
         return;
       }
       if (!(await adapter.verifyPromptExact(prompt))) {
-        this._transition(STATES.NEEDS_REVIEW, { error: 'Composer content changed before send; refusing to send', message: 'NEEDS_REVIEW — prompt mismatch before send' });
-        this.current.finishedAt = new Date().toISOString();
-        saveRunState(this.current);
-        this.bm.releaseLock(runId);
-        return;
+        this.log.warn('Prompt lost after menu steps — re-inserting');
+        await adapter.insertPrompt(prompt);
+        await new Promise(function(r) { setTimeout(r, 500); });
+        if (!(await adapter.verifyPromptExact(prompt))) {
+          this._transition(STATES.NEEDS_REVIEW, { error: 'Composer content changed before send; refusing to send', message: 'NEEDS_REVIEW — prompt mismatch before send' });
+          this.current.finishedAt = new Date().toISOString();
+          saveRunState(this.current);
+          this.bm.releaseLock(runId);
+          return;
+        }
       }
 
       this._transition(STATES.MESSAGE_SENT);
       const sendMethod = await adapter.sendMessage();
       this.log.info('Message sent via ' + sendMethod);
+      await new Promise(function(r) { setTimeout(r, 800); });
 
-      this._transition(STATES.MESSAGE_VERIFIED);
-      const appeared = await adapter.verifyUserMessageAppeared(prompt, 25000);
+      const appeared = await adapter.verifyUserMessageAppeared(prompt, 40000);
       if (!appeared) {
         this._transition(STATES.NEEDS_REVIEW, { error: 'Could not verify user message after send', message: 'NEEDS_REVIEW — submission ambiguous, not resending' });
         this.current.finishedAt = new Date().toISOString();
@@ -132,6 +145,7 @@ class RunExecutor {
         this.bm.releaseLock(runId);
         return;
       }
+      this._transition(STATES.MESSAGE_VERIFIED);
 
       this._transition(STATES.COMPLETE, { message: 'ERMI Worker Agent prompt submitted and verified successfully' });
       this.current.finishedAt = new Date().toISOString();
