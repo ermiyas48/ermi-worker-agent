@@ -278,7 +278,7 @@ class ChatGPTAdapter {
       const id = await this.page.evaluate(function() {
         const el = document.querySelector('[data-conversation-id]');
         if (el) return el.getAttribute('data-conversation-id');
-        const active = document.querySelector('a[href*="/c/"][aria-current], nav a[href*="/c/"]');
+        const active = document.querySelector('a[href*="/c/"][aria-current="page"], a[href*="/c/"][aria-current="true"], nav a[href*="/c/"][aria-current]');
         if (active) {
           const hm = (active.getAttribute('href') || '').match(/\/c\/([A-Za-z0-9_:\-]+)/);
           if (hm) return hm[1];
@@ -420,14 +420,40 @@ class ChatGPTAdapter {
     return null;
   }
   async detectPageState() {
-    const url = this.page.url();
+    let url = '';
+    try { url = this.page.url(); } catch (_) {}
     try {
       const title = await this.page.title();
       if (/just a moment|verif(y|ying).{0,20}human|attention required/i.test(title || '')) return 'CLOUDFLARE';
     } catch (_) {}
     if (url.includes('/auth') || url.includes('login.openai') || url.includes('accounts.google')) return 'AUTH_PAGE';
-    if (!(await this.isAuthenticated())) return 'NOT_AUTHENTICATED';
-    if (await this.waitForAny(SELECTORS.composer, { timeout: 3000 })) return 'COMPOSER_PRESENT';
+
+    for (let i = 0; i < SELECTORS.loginButton.length; i++) {
+      try {
+        const el = await this.page.$(SELECTORS.loginButton[i]);
+        if (el && await el.isVisible().catch(function() { return false; })) return 'NOT_AUTHENTICATED';
+      } catch (_) {}
+    }
+
+    for (let i = 0; i < SELECTORS.composer.length; i++) {
+      try {
+        const el = await this.page.$(SELECTORS.composer[i]);
+        if (el && await el.isVisible().catch(function() { return false; })) return 'COMPOSER_PRESENT';
+      } catch (_) {}
+    }
+
+    for (let i = 0; i < SELECTORS.userMenu.length; i++) {
+      try {
+        const el = await this.page.$(SELECTORS.userMenu[i]);
+        if (el && await el.isVisible().catch(function() { return false; })) return 'AUTHENTICATED';
+      } catch (_) {}
+    }
+
+    try {
+      const history = await this.page.$('nav a[href*="/c/"][aria-current]');
+      if (history) return 'AUTHENTICATED';
+    } catch (_) {}
+
     return 'UNKNOWN';
   }
 }
