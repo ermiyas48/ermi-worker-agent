@@ -98,10 +98,13 @@ class ChatGPTAdapter {
         if (el && await el.isVisible().catch(function() { return false; })) return false;
       } catch (e) {}
     }
-    const composer = await this.waitForAny(SELECTORS.composer, { timeout: 3000 });
+    const composer = await this.waitForAny(SELECTORS.composer, { timeout: 10000 });
     if (composer) return true;
-    const menu = await this.waitForAny(SELECTORS.userMenu, { timeout: 2000 });
-    return !!menu;
+    const menu = await this.waitForAny(SELECTORS.userMenu, { timeout: 4000 });
+    if (menu) return true;
+    const history = await this.page.$('[data-testid="history"], nav a[href*="/c/"]').catch(function() { return null; });
+    if (history) return true;
+    return false;
   }
   async ensureOnChatGPT() {
     const url = this.page.url();
@@ -128,7 +131,7 @@ class ChatGPTAdapter {
         acted = true;
       }
       await this.page.waitForTimeout(800);
-      await this.page.waitForLoadState('networkidle', { timeout: 12000 }).catch(function () {});
+      await this.page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(function () {});
       try { await this.page.keyboard.press('Escape'); } catch (e) {}
       const composer = await this.waitForComposer(8000);
       if (composer) {
