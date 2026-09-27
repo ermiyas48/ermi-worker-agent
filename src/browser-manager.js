@@ -1,7 +1,9 @@
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
+const path = require('path');
 const { config, getProxyServer } = require('./config');
+const COOKIES_PATH = path.join(config.dataPath, 'chatgpt-cookies.json');
 
 const STEALTH_INIT = `
 (() => {
@@ -117,6 +119,36 @@ class BrowserManager {
     const pages = this.context.pages();
     this.page = pages.length ? pages[0] : await this.context.newPage();
     try { await this.page.addInitScript(STEALTH_INIT); } catch (e) {}
+
+    // Re-apply persisted ChatGPT cookies after every launch (survives proxy restart)
+    try {
+      if (fs.existsSync(COOKIES_PATH)) {
+        const raw = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'));
+        if (Array.isArray(raw) && raw.length) {
+          const mapped = raw.map((c) => {
+            if (!c || !c.name) return null;
+            const ss = String(c.sameSite || 'lax').toLowerCase();
+            const out = {
+              name: c.name,
+              value: String(c.value),
+              path: c.path || '/',
+              httpOnly: !!c.httpOnly,
+              secure: typeof c.secure === 'boolean' ? c.secure : true,
+              sameSite: (ss === 'no_restriction' || ss === 'none') ? 'None' : (ss === 'strict' ? 'Strict' : 'Lax'),
+            };
+            if (c.domain) out.domain = c.domain; else out.url = 'https://chatgpt.com/';
+            if (c.expirationDate && !c.session) out.expires = Math.floor(Number(c.expirationDate));
+            return out;
+          }).filter(Boolean);
+          if (mapped.length) {
+            await this.context.addCookies(mapped);
+            this.log.info('Re-applied ' + mapped.length + ' persisted cookies');
+          }
+        }
+      }
+    } catch (e) {
+      this.log.warn('cookie reapply: ' + e.message);
+    }
 
     this.activeProxy = proxyServer || null;
     this.log.info('Chromium ready proxy=' + (this.activeProxy || 'none'));
