@@ -89,29 +89,54 @@ class RunExecutor {
 
       this._transition(STATES.CHATGPT_READY);
       let pageState = await adapter.detectPageState();
+
       if (pageState === 'CLOUDFLARE') {
         for (let i = 0; i < 4; i++) {
-          await page.waitForTimeout(3000);
+          await page.waitForTimeout(2500);
           try { await page.mouse.move(100 + i * 30, 120 + i * 20); } catch (e) {}
           pageState = await adapter.detectPageState();
           if (pageState !== 'CLOUDFLARE') break;
-          if (i === 2) await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
+          if (i === 2) {
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
+          }
         }
       }
-      let composer = await adapter.waitForComposer(12000);
-      if (!composer) {
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
-        await page.waitForTimeout(2000);
-        composer = await adapter.waitForComposer(15000);
-      }
+
       pageState = await adapter.detectPageState();
-      if ((pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') && !composer) {
-        this._transition(STATES.REAUTH_REQUIRED, { error: 'ChatGPT session needs re-authentication.', message: 'ChatGPT session needs re-authentication.' });
+      if (pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') {
+        this._transition(STATES.REAUTH_REQUIRED, {
+          error: 'ChatGPT session needs re-authentication.',
+          message: 'ChatGPT session needs re-authentication.'
+        });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
         return;
       }
+
+      if (pageState !== 'AUTHENTICATED' && pageState !== 'COMPOSER_PRESENT') {
+        let authConfirmed = false;
+        for (let i = 0; i < 8; i++) {
+          await page.waitForTimeout(750);
+          pageState = await adapter.detectPageState();
+          if (pageState === 'AUTHENTICATED' || pageState === 'COMPOSER_PRESENT') {
+            authConfirmed = true;
+            break;
+          }
+          if (pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') break;
+        }
+        if (!authConfirmed) {
+          this._transition(STATES.NEEDS_REVIEW, {
+            error: 'ChatGPT authentication state not confirmed',
+            message: 'NEEDS_REVIEW — ChatGPT page state remained unknown after bounded probe'
+          });
+          this.current.finishedAt = new Date().toISOString();
+          saveRunState(this.current);
+          this.bm.releaseLock(runId);
+          return;
+        }
+      }
+
       this._transition(STATES.AUTHENTICATED);
 
       const activeProxy = this.bm.activeProxy || null;
