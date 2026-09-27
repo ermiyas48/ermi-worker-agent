@@ -21,9 +21,6 @@ const SELECTORS = {
     'button[aria-label="New Chat"]',
     'a[aria-label="New Chat"]',
     '[data-testid="new-chat-button"]',
-    'nav a[href="/"]',
-    'a[href="/?model="]',
-    'a[href="/"]',
   ],
   plusButton: ['button[aria-label="Attach files"]', 'button[aria-label="Upload files and more"]', 'button[aria-label*="Attach"]', 'button[data-testid="composer-plus-btn"]', 'button[aria-haspopup="menu"]'],
   loginButton: ['button[data-testid="login-button"]', 'button:has-text("Log in")', 'button:has-text("Sign up")', 'a[href*="auth"]'],
@@ -32,13 +29,10 @@ const SELECTORS = {
     '[data-message-author-role="user"]',
     'div[data-message-author-role="user"]',
     'div[data-testid*="user-message"]',
-    '[data-testid="conversation-turn-"] [data-message-author-role="user"]',
-    'article[data-testid*="conversation-turn"]',
-    'div.agent-turn',
   ],
-  pluginsOption: ['div[role="menuitem"]:has-text("Plugins")', 'button:has-text("Plugins")', 'div[role="option"]:has-text("Plugins")'],
-  thinkingOption: ['div[role="menuitem"]:has-text("Thinking")', 'button:has-text("Thinking")', 'div[role="menuitem"]:has-text("Reasoning")', 'button:has-text("Reason")', 'div[role="option"]:has-text("Thinking")'],
-  toolsMenu: ['button[aria-label*="Model"]', 'button[aria-label*="GPT"]', 'button:has-text("GPT")', 'button[data-testid="model-switcher"]'],
+  pluginsOption: ['div[role="menuitem"]:has-text("Plugins")', 'button:has-text("Plugins")'],
+  thinkingOption: ['div[role="menuitem"]:has-text("Thinking")', 'button:has-text("Thinking")'],
+  toolsMenu: ['button[aria-label*="Model"]', 'button[aria-label*="GPT"]', 'button:has-text("GPT")'],
 };
 
 class ChatGPTAdapter {
@@ -117,30 +111,31 @@ class ChatGPTAdapter {
     return this.waitForAny(SELECTORS.composer, { timeout: timeout || 20000 });
   }
   async openNewChat() {
-    const target = config.chatgptNewChatUrl || config.chatgptUrl || 'https://chatgpt.com/';
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const current = this.page.url();
-      let acted = false;
-      if (/chatgpt\.com/i.test(current)) {
-        const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 6000 });
-        if (clicked) { acted = true; this.log.info('New chat click attempt=' + attempt); }
+    const already = await this.waitForComposer(3000);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const clicked = await this.clickAny(SELECTORS.newChat, { timeout: 5000 });
+      if (clicked) {
+        this.log.info('New chat click attempt=' + attempt);
+        await this.page.waitForTimeout(1200);
+        try { await this.page.keyboard.press('Escape'); } catch (e) {}
+        const composer = await this.waitForComposer(10000);
+        if (composer) {
+          this.log.info('Composer ready after new chat click attempt=' + attempt);
+          return true;
+        }
+      } else {
+        this.log.warn('New chat button not found attempt=' + attempt);
       }
-      if (!acted) {
-        this.log.info('New chat via navigation attempt=' + attempt);
-        await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        acted = true;
-      }
-      await this.page.waitForTimeout(800);
-      await this.page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(function () {});
-      try { await this.page.keyboard.press('Escape'); } catch (e) {}
-      const composer = await this.waitForComposer(8000);
-      if (composer) {
-        this.log.info('Composer ready after new chat attempt=' + attempt);
-        return true;
-      }
-      this.log.warn('Composer not ready after new chat attempt=' + attempt);
     }
-    return false;
+    const fallback = await this.waitForComposer(5000);
+    if (fallback || already) {
+      this.log.info('Using existing composer (new-chat soft-fail)');
+      return true;
+    }
+    this.log.warn('New chat fallback navigation');
+    await this.page.goto(config.chatgptUrl || 'https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(function () {});
+    await this.page.waitForTimeout(1500);
+    return !!(await this.waitForComposer(12000));
   }
   async getComposerText() {
     const found = await this.waitForAny(SELECTORS.composer, { timeout: 5000 });
