@@ -189,7 +189,7 @@ class RunExecutor {
       this._transition(STATES.NEW_CHAT_READY);
 
       await page.waitForTimeout(500);
-      composer = typeof adapter.isComposerUsable === 'function'
+      let composer = typeof adapter.isComposerUsable === 'function'
         ? await adapter.isComposerUsable(10000)
         : await adapter.waitForComposer(10000);
       if (!composer) {

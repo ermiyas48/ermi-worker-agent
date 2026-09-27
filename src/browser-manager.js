@@ -7,18 +7,8 @@ const COOKIES_PATH = path.join(config.dataPath, 'chatgpt-cookies.json');
 
 const STEALTH_INIT = `
 (() => {
+  // Keep the browser otherwise native; only hide the automation flag.
   try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (e) {}
-  try { if (!window.chrome) window.chrome = { runtime: {} }; } catch (e) {}
-  try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (e) {}
-  try { Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); } catch (e) {}
-  try {
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-      parameters && parameters.name === 'notifications'
-        ? Promise.resolve({ state: Notification.permission })
-        : originalQuery(parameters)
-    );
-  } catch (e) {}
 })();
 `;
 
@@ -76,14 +66,13 @@ class BrowserManager {
     const profileDir = config.profilePath;
     fs.mkdirSync(profileDir, { recursive: true });
     const proxyServer = getProxyServer();
-    this.log.info('Launch Chromium headless=' + headless + ' proxy=' + (proxyServer || 'none'));
+    this.log.info('Launch Chromium headless=' + headless + ' channel=chromium proxy=' + (proxyServer || 'none'));
 
     const args = [
       '--disable-blink-features=AutomationControlled',
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-dev-shm-usage',
-      '--disable-gpu',
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--mute-audio',
@@ -91,6 +80,7 @@ class BrowserManager {
 
     const launchOpts = {
       headless: !!headless,
+      channel: 'chromium',
       args,
       viewport: { width: 1280, height: 720 },
       ignoreHTTPSErrors: true,
@@ -104,9 +94,10 @@ class BrowserManager {
     try {
       this.context = await chromium.launchPersistentContext(profileDir, launchOpts);
     } catch (err) {
-      this.log.warn('launch with single-process failed: ' + err.message);
-      const args2 = args.filter((a) => a !== '--single-process');
-      this.context = await chromium.launchPersistentContext(profileDir, { ...launchOpts, args: args2 });
+      this.log.warn('launch with native Chromium channel failed: ' + err.message);
+      const fallback = { ...launchOpts };
+      delete fallback.channel;
+      this.context = await chromium.launchPersistentContext(profileDir, fallback);
     }
 
     await this.context.addInitScript(STEALTH_INIT);
@@ -115,7 +106,6 @@ class BrowserManager {
     this.page = pages.length ? pages[0] : await this.context.newPage();
     try { await this.page.addInitScript(STEALTH_INIT); } catch (e) {}
 
-    // Re-apply persisted ChatGPT cookies after every launch (survives proxy restart)
     try {
       if (fs.existsSync(COOKIES_PATH)) {
         const raw = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'));
@@ -147,7 +137,7 @@ class BrowserManager {
     }
 
     this.activeProxy = proxyServer || null;
-    this.log.info('Chromium ready proxy=' + (this.activeProxy || 'none'));
+    this.log.info('Chromium ready headless=' + headless + ' native=true proxy=' + (this.activeProxy || 'none'));
     return { browser: this.browser, context: this.context, page: this.page };
   }
 
