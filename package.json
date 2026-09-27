@@ -15,7 +15,7 @@
     "express": "^4.21.0",
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
-    "playwright": "1.48.0",
+    "playwright": "1.63.0",
     "uuid": "^10.0.0"
   },
   "license": "UNLICENSED",
