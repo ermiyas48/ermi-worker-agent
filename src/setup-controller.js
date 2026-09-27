@@ -1,5 +1,8 @@
 'use strict';
+const fs = require('fs');
+const path = require('path');
 const { config, isSetupComplete, markSetupComplete } = require('./config');
+const COOKIES_PATH = path.join(config.dataPath, 'chatgpt-cookies.json');
 const { getBrowserManager } = require('./browser-manager');
 const { ChatGPTAdapter } = require('./chatgpt-adapter');
 
@@ -125,6 +128,12 @@ class SetupController {
         }
       }
       this.log.info('Imported ' + applied + '/' + normalized.length + ' cookies proxy=' + (px || 'none'));
+      try {
+        fs.writeFileSync(COOKIES_PATH, JSON.stringify(rawCookies));
+        this.log.info('Persisted cookies to disk');
+      } catch (e) {
+        this.log.warn('cookie persist: ' + e.message);
+      }
 
       await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch((e) => {
         this.log.warn('goto: ' + e.message);
@@ -194,7 +203,6 @@ class SetupController {
   }
 
   async detectAuthentication() {
-    if (isSetupComplete()) return { authenticated: true, setupComplete: true };
     try {
       const page = await this.bm.getPage();
       const adapter = new ChatGPTAdapter(page, this.log);
@@ -219,7 +227,7 @@ class SetupController {
           ? 'Cloudflare challenge (headless). Residential proxy active. Import fresh cookies via /setup.'
           : 'Cloudflare challenge and no valid proxy. Ensure Termux is ACTIVE, then import cookies.';
       }
-      return { authenticated: false, setupComplete: false, message: hint, page: info, pageState };
+      return { authenticated: false, setupComplete: isSetupComplete(), message: hint, page: info, pageState };
     } catch (e) {
       return { authenticated: false, error: e.message };
     }
