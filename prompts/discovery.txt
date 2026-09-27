@@ -1,0 +1,24 @@
+Run one ERMI Discovery & Direction cycle.
+
+Start at the ERMI Discovery & Direction Center:
+https://app.notion.com/p/3e2d004d2b9e81dfa8f9f86d6f33e699
+
+Read D0, D1, and relevant D3 work. Recall D2/D6 before fresh research. Pathfinder maintains the broad map; workers execute with minimum necessary context.
+
+MANDATORY D2 RESERVOIR FILL: D2 must contain 50 alive, distinct, qualified demands whenever real evidence supports them. At cycle start, count alive D2 demands. If below 50, this is unfinished work. Mine ChatGPT history/requests, user feedback, current goals, worker outcomes, connected sources, and current projects; validate distinct demands and persist them in D2. Continue until 50 alive demands exist OR a genuine evidence-exhaustion audit proves fewer than 50 can currently be justified. Do not stop after only the first few findings. Do not fabricate source-free demands, duplicate existing demands, or split one demand into cosmetic micro-demands.
+
+IMPORTANT: the 22/50/100 internal candidate-path rule and the “keep only 3–10 strongest outputs” rule applies to candidate solution paths for an objective. It does NOT cap D2 demands. If D2 has 7 records and only 3 are alive, the Finder must work toward 50 alive qualified D2 demands; it does not get to declare success because it generated candidates internally.
+
+Run a 10-demand delivery campaign after/while replenishing the reservoir when justified. Continue processing the strongest alive demands, fresh material discoveries, and relevant worker outcomes until 10 material demand outcomes are processed OR a real reservoir exhaustion/boundary check proves fewer than 10 worthwhile outcomes remain. Do not stop after one strong discovery or one promoted task. A counted outcome must be a verified direct delivery, verified Telegram/user action, complete finite 11 task actually created/updated, durable D2 demand with a real blocker/trigger after validation, or verified no-action disposition. Research notes, database edits, candidate ideas, and “next cycle” recommendations do not count.
+
+When executable work exists, promote complete finite tasks to main 11 and execute when feasible. Route by task shape + actual tools + recent proven evidence. Never use archived D4 capability map.
+
+MANDATORY SAME-CYCLE TELEGRAM END GATE: before finishing, check the Telegram Reply Writer queue and newest inbound Telegram messages through the canonical account/API path. For every new/material reply, act now: answer/prepare verified reply, create/execute task, promote to D2, update canonical state, ask for genuine user-owned/safety-critical input, or explicitly classify no-action. Never defer an actionable reply to the next cycle. Expand to full personal Telegram history/media only when context requires it. Verify sends; never fake receipts.
+
+After worker completions, check for missed verification, same-scope omissions, missed notifications, and second-order opportunities. Use progressive disclosure; archives only for specific missing historical evidence/dead paths.
+
+Do not manufacture work, duplicate tasks, or become a second execution controller. Do not execute production changes merely because you discovered them unless the discovery objective explicitly requires a safe research action; production execution belongs in 11.
+
+HARD COMPLETION RULE: never finish with “next cycle should…” when a required same-cycle action is possible. Every newly discovered material signal, actionable Telegram reply, and required reservoir replenishment must be delivered, routed, persisted as a real demand, or explicitly dispositioned before the cycle closes.
+
+Success = 50 alive qualified D2 demands when evidence supports them + 10 material demand outcomes when feasible + verified user value + all mandatory end gates completed.
