@@ -1,7 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { config, saveRunState, isSetupComplete, getNextPrompt } = require('./config');
+const { config, saveRunState, isSetupComplete, getNextPrompt, getProxyServer } = require('./config');
 const { STATES, HUMAN_LABELS, ALLOWED_TRANSITIONS } = require('./states');
 const { getBrowserManager } = require('./browser-manager');
 const { ChatGPTAdapter } = require('./chatgpt-adapter');
@@ -114,24 +114,42 @@ class RunExecutor {
       }
       this._transition(STATES.AUTHENTICATED);
 
-      this._transition(STATES.NEW_CHAT_READY);
+      const activeProxy = this.bm.activeProxy || null;
+      const desiredProxy = getProxyServer() || null;
+      if (activeProxy !== desiredProxy) {
+        this._transition(STATES.NEEDS_REVIEW, {
+          error: 'Proxy changed during run before new chat',
+          message: 'NEEDS_REVIEW — proxy changed; restarting on the next run is safer than using a stale browser route'
+        });
+        this.current.finishedAt = new Date().toISOString();
+        saveRunState(this.current);
+        this.bm.releaseLock(runId);
+        return;
+      }
+
       const newChatOk = await adapter.openNewChat();
       this.log.info('openNewChat result=' + newChatOk);
-      await page.waitForTimeout(600);
-
-      composer = null;
-      if (typeof adapter.isComposerUsable === 'function') composer = await adapter.isComposerUsable(12000);
-      else composer = await adapter.waitForComposer(12000);
-      if (!composer) {
-        this.log.warn('Composer missing after openNewChat — bounded recovery');
-        await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function () {});
-        await page.waitForTimeout(2500);
-        try { await page.keyboard.press('Escape'); } catch (e) {}
-        if (typeof adapter.isComposerUsable === 'function') composer = await adapter.isComposerUsable(20000);
-        else composer = await adapter.waitForComposer(20000);
+      if (!newChatOk) {
+        this._transition(STATES.FAILED, {
+          error: 'New chat/composer recovery failed',
+          message: 'FAILED — no confirmed new chat with usable composer'
+        });
+        this.current.finishedAt = new Date().toISOString();
+        saveRunState(this.current);
+        this.bm.releaseLock(runId);
+        return;
       }
+      this._transition(STATES.NEW_CHAT_READY);
+
+      await page.waitForTimeout(500);
+      composer = typeof adapter.isComposerUsable === 'function'
+        ? await adapter.isComposerUsable(10000)
+        : await adapter.waitForComposer(10000);
       if (!composer) {
-        this._transition(STATES.FAILED, { error: 'Composer not ready after new chat', message: 'FAILED — no usable composer after new chat + recovery' });
+        this._transition(STATES.FAILED, {
+          error: 'Composer disappeared after confirmed new chat',
+          message: 'FAILED — composer disappeared after new-chat confirmation'
+        });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
@@ -143,6 +161,16 @@ class RunExecutor {
       await adapter.insertPrompt(prompt);
       if (!(await adapter.verifyPromptExact(prompt))) {
         await adapter.insertPrompt(prompt);
+      }
+      if (!(await adapter.verifyPromptExact(prompt))) {
+        this._transition(STATES.NEEDS_REVIEW, {
+          error: 'Composer content not exact after insertion',
+          message: 'NEEDS_REVIEW — exact prompt mismatch after bounded insertion retry'
+        });
+        this.current.finishedAt = new Date().toISOString();
+        saveRunState(this.current);
+        this.bm.releaseLock(runId);
+        return;
       }
 
       this._transition(STATES.PLUS_MENU_OPEN);
@@ -167,6 +195,29 @@ class RunExecutor {
           this.bm.releaseLock(runId);
           return;
         }
+      }
+
+      const desiredProxyBeforeSend = getProxyServer() || null;
+      if ((this.bm.activeProxy || null) !== desiredProxyBeforeSend) {
+        this._transition(STATES.NEEDS_REVIEW, {
+          error: 'Proxy changed during run before send',
+          message: 'NEEDS_REVIEW — proxy changed; message was not sent'
+        });
+        this.current.finishedAt = new Date().toISOString();
+        saveRunState(this.current);
+        this.bm.releaseLock(runId);
+        return;
+      }
+
+      if (!(await adapter.verifyPromptExact(prompt))) {
+        this._transition(STATES.NEEDS_REVIEW, {
+          error: 'Composer content not exact immediately before send',
+          message: 'NEEDS_REVIEW — exact prompt verification failed immediately before send'
+        });
+        this.current.finishedAt = new Date().toISOString();
+        saveRunState(this.current);
+        this.bm.releaseLock(runId);
+        return;
       }
 
       const sentPrompt = prompt;
