@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.63.0-jammy
+FROM mcr.microsoft.com/playwright:v1.48.0-jammy
 # Force Railway to rebuild from the Playwright runtime image.
 WORKDIR /app
 COPY package.json package-lock.json* ./
