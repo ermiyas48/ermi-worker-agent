@@ -1,4 +1,5 @@
 FROM mcr.microsoft.com/playwright:v1.48.0-jammy
+# Runtime hardening: keep the image source explicit for reproducible Railway builds.
 # Force Railway to rebuild from the Playwright runtime image.
 WORKDIR /app
 COPY package.json package-lock.json* ./
