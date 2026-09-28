@@ -66,6 +66,18 @@ test('Adapter wait exits cleanly when page is already closed', async () => {
   assert.strictEqual(result, null);
 });
 
+test('BrowserManager avoids lifecycle re-entry and destructive navigation probe', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const source = fs.readFileSync(path.join(__dirname, 'browser-manager.js'), 'utf8');
+  const start = source.indexOf('async _ensureBrowserUnlocked');
+  const end = source.indexOf('async _launch', start);
+  assert.ok(start >= 0 && end > start);
+  const section = source.slice(start, end);
+  assert.ok(!section.includes('await this.close()'));
+  assert.ok(!section.includes('page.evaluate(() => true)'));
+});
+
 Promise.all(pending).then(() => {
   console.log('\nResults: ' + passed + ' passed, ' + failed + ' failed\n');
   process.exit(failed > 0 ? 1 : 0);

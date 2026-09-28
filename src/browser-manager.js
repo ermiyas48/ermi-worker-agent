@@ -69,10 +69,15 @@ class BrowserManager {
   async _ensureBrowserUnlocked(opts) {
     opts = opts || {};
     const desired = getProxyServer();
-    if (opts.forceRestart && this.context) await this.close();
+    if (opts.forceRestart && this.context) await this._closeUnlocked();
     if (this.context) {
-      const pages = this.context.pages().filter((p) => !p.isClosed());
-      if (pages.length) this.page = pages[0];
+      try {
+        const pages = this.context.pages().filter((p) => !p.isClosed());
+        if (pages.length) this.page = pages[0];
+      } catch (e) {
+        this.log.warn('browser context unavailable; relaunching: ' + e.message);
+        await this._closeUnlocked();
+      }
     }
     if (this.context && this.page && !this.page.isClosed()) {
       if ((desired || null) !== (this.activeProxy || null)) {
