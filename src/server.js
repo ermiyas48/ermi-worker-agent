@@ -9,6 +9,7 @@ const { HUMAN_LABELS } = require('./states');
 const logger = require('./logger');
 const { getBrowserManager } = require('./browser-manager');
 const { getRunExecutor } = require('./run-executor');
+const { ChatGPTAdapter } = require('./chatgpt-adapter');
 const { getSetupController } = require('./setup-controller');
 
 const app = express();
