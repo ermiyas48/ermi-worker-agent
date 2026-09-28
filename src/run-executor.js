@@ -85,53 +85,66 @@ class RunExecutor {
       let adapter = new ChatGPTAdapter(page, this.log);
 
       this._transition(STATES.CHATGPT_LOADING);
-      await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await sleep(2500);
+
+      let pageState = await adapter.detectPageState().catch(function() { return 'UNKNOWN'; });
+      let urlNow = '';
+      try { urlNow = page.url(); } catch (e) {}
+      const alreadyWarm = (pageState === 'COMPOSER_PRESENT' || pageState === 'AUTHENTICATED')
+        && /chatgpt\.com/i.test(urlNow || '');
+      if (alreadyWarm) {
+        this.log.info('Reusing warm ChatGPT page state=' + pageState + ' — skip full navigation');
+      } else {
+        try {
+          await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        } catch (e) {
+          this.log.warn('goto: ' + e.message);
+        }
+        await sleep(2500);
+      }
 
       this._transition(STATES.CHATGPT_READY);
-      let pageState = await adapter.detectPageState();
+      pageState = await adapter.detectPageState();
 
-      if (pageState === 'CLOUDFLARE') {
-        this.log.warn('CF challenge — passive wait up to 55s before any restart');
-        const cfDeadline = Date.now() + 55000;
-        let cleared = false;
+      async function isCfBlocked() {
+        try {
+          const title = await page.title();
+          const body = await page.evaluate(function() { return (document.body && document.body.innerText) || ''; }).catch(function() { return ''; });
+          return /just a moment|attention required|checking your browser|enable javascript and cookies|verif(y|ying).{0,20}human/i.test((title || '') + ' ' + (body || ''));
+        } catch (e) {
+          return false;
+        }
+      }
+
+      if (pageState === 'CLOUDFLARE' || await isCfBlocked()) {
+        this.log.warn('CF challenge — passive wait up to 70s (setup-aligned)');
+        const cfDeadline = Date.now() + 70000;
         let tick = 0;
         while (Date.now() < cfDeadline) {
-          await sleep(3000);
+          await sleep(2500);
           tick++;
           try {
             await page.mouse.move(80 + (tick * 37) % 400, 100 + (tick * 23) % 300);
-            await page.mouse.wheel(0, 40);
+            await page.mouse.wheel(0, 30 + (tick % 40));
           } catch (e) {}
-          pageState = await adapter.detectPageState();
-          if (pageState !== 'CLOUDFLARE') {
+          if (!(await isCfBlocked())) {
+            pageState = await adapter.detectPageState();
             this.log.info('CF cleared after passive wait tick=' + tick + ' state=' + pageState);
-            cleared = true;
             break;
           }
+          pageState = await adapter.detectPageState();
         }
-        if (!cleared) {
-          this.log.warn('CF still present after passive wait — one persistent-profile restart');
-          try {
-            const relaunched = await this.bm.restartPreservingSession('cloudflare-challenge final');
-            page = relaunched.page;
-            adapter = new ChatGPTAdapter(page, this.log);
-            await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await sleep(8000);
-            const cfDeadline2 = Date.now() + 30000;
-            while (Date.now() < cfDeadline2) {
-              pageState = await adapter.detectPageState();
-              if (pageState !== 'CLOUDFLARE') {
-                this.log.info('CF cleared after single restart state=' + pageState);
-                break;
-              }
-              await sleep(3000);
-              try { await page.mouse.move(120, 160); } catch (e) {}
-            }
-          } catch (e) {
-            this.log.warn('CF browser restart failed: ' + e.message);
+        if (await isCfBlocked()) {
+          this.log.warn('CF still present — soft reload once (no browser kill)');
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(function() {});
+          await sleep(4000);
+          const cfDeadline2 = Date.now() + 35000;
+          while (Date.now() < cfDeadline2 && await isCfBlocked()) {
+            await sleep(2500);
+            try { await page.mouse.move(140, 180); } catch (e) {}
           }
+          pageState = await adapter.detectPageState();
         }
+        try { await this.bm.exportSessionCookies(); } catch (e) {}
       }
 
       pageState = await adapter.detectPageState();
@@ -148,14 +161,17 @@ class RunExecutor {
 
       if (pageState !== 'AUTHENTICATED' && pageState !== 'COMPOSER_PRESENT') {
         let authConfirmed = false;
-        for (let i = 0; i < 8; i++) {
-          await sleep(750);
+        for (let i = 0; i < 12; i++) {
+          await sleep(1000);
           pageState = await adapter.detectPageState();
           if (pageState === 'AUTHENTICATED' || pageState === 'COMPOSER_PRESENT') {
             authConfirmed = true;
             break;
           }
           if (pageState === 'AUTH_PAGE' || pageState === 'NOT_AUTHENTICATED') break;
+          if (!(await isCfBlocked()) && pageState === 'UNKNOWN') {
+            // keep waiting for SPA paint
+          }
         }
         if (!authConfirmed) {
           let uiLooksNonAuth = false;
@@ -307,8 +323,7 @@ class RunExecutor {
 
       if (!verifyResult.ok) {
         const reason = verifyResult.reason || 'verification_failed';
-        const state = STATES.NEEDS_REVIEW;
-        this._transition(state, { error: reason, message: 'NEEDS_REVIEW — ' + reason, verificationReceipt: receipt });
+        this._transition(STATES.NEEDS_REVIEW, { error: reason, message: 'NEEDS_REVIEW — ' + reason, verificationReceipt: receipt });
         this.current.finishedAt = new Date().toISOString();
         saveRunState(this.current);
         this.bm.releaseLock(runId);
