@@ -5,6 +5,7 @@ const { config, saveRunState, isSetupComplete, getNextPrompt, getProxyServer } =
 const { STATES, HUMAN_LABELS, ALLOWED_TRANSITIONS } = require('./states');
 const { getBrowserManager } = require('./browser-manager');
 const { ChatGPTAdapter } = require('./chatgpt-adapter');
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function hashPrompt(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
@@ -85,7 +86,7 @@ class RunExecutor {
 
       this._transition(STATES.CHATGPT_LOADING);
       await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForTimeout(2500);
+      await sleep(2500);
 
       this._transition(STATES.CHATGPT_READY);
       let pageState = await adapter.detectPageState();
@@ -93,7 +94,7 @@ class RunExecutor {
       if (pageState === 'CLOUDFLARE') {
         this.log.warn('CF challenge — preserving persistent session and restarting Chromium');
         for (let restartAttempt = 1; restartAttempt <= 2; restartAttempt++) {
-          await page.waitForTimeout(4000);
+          await sleep(4000);
           pageState = await adapter.detectPageState();
           if (pageState !== 'CLOUDFLARE') {
             this.log.info('CF challenge cleared without browser restart attempt=' + restartAttempt);
@@ -105,7 +106,7 @@ class RunExecutor {
             page = relaunched.page;
             adapter = new ChatGPTAdapter(page, this.log);
             await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await page.waitForTimeout(5000);
+            await sleep(5000);
             pageState = await adapter.detectPageState();
             if (pageState !== 'CLOUDFLARE') {
               this.log.info('CF challenge cleared after persistent-profile browser restart attempt=' + restartAttempt);
@@ -133,7 +134,7 @@ class RunExecutor {
       if (pageState !== 'AUTHENTICATED' && pageState !== 'COMPOSER_PRESENT') {
         let authConfirmed = false;
         for (let i = 0; i < 8; i++) {
-          await page.waitForTimeout(750);
+          await sleep(750);
           pageState = await adapter.detectPageState();
           if (pageState === 'AUTHENTICATED' || pageState === 'COMPOSER_PRESENT') {
             authConfirmed = true;
@@ -195,7 +196,7 @@ class RunExecutor {
       }
       this._transition(STATES.NEW_CHAT_READY);
 
-      await page.waitForTimeout(500);
+      await sleep(500);
       let composer = typeof adapter.isComposerUsable === 'function'
         ? await adapter.isComposerUsable(10000)
         : await adapter.waitForComposer(10000);

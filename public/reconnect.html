@@ -46,27 +46,49 @@ const tokenEl=document.getElementById('token');
 const statusEl=document.getElementById('status');
 const shot=document.getElementById('shot');
 const textEl=document.getElementById('text');
-function headers(){return {Authorization:'Bearer '+tokenEl.value, 'Content-Type':'application/json'};}
+let requestChain=Promise.resolve();
+let shotUrl=null;
+function headers(){return {Authorization:'Bearer '+tokenEl.value,'Content-Type':'application/json'};}
+function enqueue(fn){const run=requestChain.then(fn,fn);requestChain=run.catch(()=>{});return run;}
 async function call(path,method='GET',body){
   const r=await fetch(path,{method,headers:headers(),body:body?JSON.stringify(body):undefined});
   const j=await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+  if(!r.ok){const err=new Error(j.error||('HTTP '+r.status));err.status=r.status;throw err;}
   return j;
 }
-async function refresh(){
+async function loadScreenshot(){
+  const r=await fetch('/reconnect/screenshot',{headers:{Authorization:'Bearer '+tokenEl.value},cache:'no-store'});
+  if(!r.ok) throw new Error('Screenshot HTTP '+r.status);
+  const blob=await r.blob();
+  const nextUrl=URL.createObjectURL(blob);
+  if(shotUrl) URL.revokeObjectURL(shotUrl);
+  shotUrl=nextUrl;
+  shot.src=nextUrl;
+}
+async function refreshOnce(){
   try{
     const j=await call('/reconnect/status');
     const cls=j.cloudflare?'warn':(j.authenticated?'ok':'small');
     statusEl.className=cls;
     statusEl.textContent=(j.cloudflare?'Cloudflare challenge: solve it here. ':j.authenticated?'Authenticated. ':'Not authenticated yet. ')
       +'state='+j.state+' url='+j.url+' proxy='+j.proxy;
-    shot.src='/reconnect/screenshot?token='+encodeURIComponent(tokenEl.value)+'&t='+Date.now();
-  }catch(e){statusEl.textContent=e.message;}
+    await loadScreenshot();
+  }catch(e){
+    statusEl.className=e.status===409?'warn':'small';
+    statusEl.textContent=e.message;
+  }
 }
+function refresh(){return enqueue(refreshOnce);}
 async function action(type,extra){
-  try{await call('/reconnect/action','POST',Object.assign({type},extra||{})); await refresh();}catch(e){statusEl.textContent=e.message;}
+  await enqueue(async()=>{
+    try{await call('/reconnect/action','POST',Object.assign({type},extra||{}));await refreshOnce();}
+    catch(e){statusEl.textContent=e.message;}
+  });
 }
-document.getElementById('start').onclick=async()=>{try{await call('/reconnect/start','POST',{});await refresh();}catch(e){statusEl.textContent=e.message;}};
+document.getElementById('start').onclick=()=>enqueue(async()=>{
+  try{await call('/reconnect/start','POST',{});await refreshOnce();}
+  catch(e){statusEl.textContent=e.message;}
+});
 document.getElementById('restart').onclick=()=>action('restart');
 document.getElementById('reload').onclick=()=>action('reload');
 document.getElementById('type').onclick=()=>{const v=textEl.value;if(v)action('type',{text:v});};
@@ -74,13 +96,18 @@ document.getElementById('enter').onclick=()=>action('press',{key:'Enter'});
 document.getElementById('clear').onclick=()=>action('type',{clear:true});
 document.getElementById('up').onclick=()=>action('scroll',{dy:-400});
 document.getElementById('down').onclick=()=>action('scroll',{dy:400});
-shot.onclick=(e)=>{
+shot.onclick=(ev)=>{
   const rect=shot.getBoundingClientRect();
-  const x=Math.round((e.clientX-rect.left)*(shot.naturalWidth/rect.width));
-  const y=Math.round((e.clientY-rect.top)*(shot.naturalHeight/rect.height));
+  if(!shot.naturalWidth||!shot.naturalHeight||!rect.width||!rect.height)return;
+  const x=Math.round((ev.clientX-rect.left)*(shot.naturalWidth/rect.width));
+  const y=Math.round((ev.clientY-rect.top)*(shot.naturalHeight/rect.height));
   action('click',{x,y});
 };
-setInterval(()=>{if(tokenEl.value)refresh();},2500);
+async function pollLoop(){
+  if(tokenEl.value) await refresh();
+  setTimeout(pollLoop,2500);
+}
+pollLoop();
 </script>
 </body>
 </html>

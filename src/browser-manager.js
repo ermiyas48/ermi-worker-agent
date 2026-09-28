@@ -35,6 +35,19 @@ class BrowserManager {
     this.lockOwner = null;
     this.launchPromise = null;
     this.activeProxy = null;
+    this.lifecycleTail = Promise.resolve();
+  }
+
+  async _withLifecycle(task) {
+    const previous = this.lifecycleTail;
+    let release;
+    this.lifecycleTail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+    }
   }
   isLocked() { return this.lock; }
   acquireLock(runId) {
@@ -44,27 +57,29 @@ class BrowserManager {
     return true;
   }
   releaseLock(runId) {
-    if (this.lockOwner && this.lockOwner !== runId) return false;
+    if (!this.lock || this.lockOwner !== runId) return false;
     this.lock = false; this.lockOwner = null;
     return true;
   }
 
   async ensureBrowser(opts) {
+    return this._withLifecycle(() => this._ensureBrowserUnlocked(opts));
+  }
+
+  async _ensureBrowserUnlocked(opts) {
     opts = opts || {};
     const desired = getProxyServer();
     if (opts.forceRestart && this.context) await this.close();
+    if (this.context) {
+      const pages = this.context.pages().filter((p) => !p.isClosed());
+      if (pages.length) this.page = pages[0];
+    }
     if (this.context && this.page && !this.page.isClosed()) {
       if ((desired || null) !== (this.activeProxy || null)) {
         this.log.info('Proxy changed — restarting browser');
-        await this.close();
+        await this._closeUnlocked();
       } else {
-        try {
-          await this.page.evaluate(() => true);
-          return { browser: this.browser, context: this.context, page: this.page };
-        } catch (e) {
-          this.log.warn('page unhealthy: ' + e.message);
-          await this.close();
-        }
+        return { browser: this.browser, context: this.context, page: this.page };
       }
     }
     if (this.launchPromise) return this.launchPromise;
@@ -161,15 +176,21 @@ class BrowserManager {
   }
 
   async close() {
+    return this._withLifecycle(() => this._closeUnlocked());
+  }
+
+  async _closeUnlocked() {
     try { if (this.context) await this.context.close().catch(() => {}); } catch (e) {}
     this.context = null; this.page = null; this.browser = null; this.activeProxy = null;
   }
 
   async restartPreservingSession(reason) {
-    const oldProxy = this.activeProxy || null;
-    this.log.warn('Restarting Chromium while preserving persistent profile' + (reason ? ' reason=' + reason : '') + ' proxy=' + (oldProxy || 'none'));
-    await this.close();
-    return this.ensureBrowser({ headless: config.headless });
+    return this._withLifecycle(async () => {
+      const oldProxy = this.activeProxy || null;
+      this.log.warn('Restarting Chromium while preserving persistent profile' + (reason ? ' reason=' + reason : '') + ' proxy=' + (oldProxy || 'none'));
+      await this._closeUnlocked();
+      return this._ensureBrowserUnlocked({ headless: config.headless });
+    });
   }
 
   async launchForSetup() {

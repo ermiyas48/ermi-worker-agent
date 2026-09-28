@@ -3,10 +3,13 @@ const assert = require('assert');
 const { config } = require('./config');
 const { STATES, HUMAN_LABELS, ALLOWED_TRANSITIONS } = require('./states');
 const { hashPrompt } = require('./run-executor');
-let passed = 0, failed = 0;
+let passed = 0, failed = 0, pending = [];
 function test(name, fn) {
-  try { fn(); console.log('  ✓ ' + name); passed++; }
-  catch (e) { console.error('  ✗ ' + name + ': ' + e.message); failed++; }
+  const p = Promise.resolve().then(fn).then(
+    () => { console.log('  ✓ ' + name); passed++; },
+    (e) => { console.error('  ✗ ' + name + ': ' + e.message); failed++; }
+  );
+  pending.push(p);
 }
 console.log('\n=== ERMI Worker offline tests ===\n');
 test('ERMI prompt exact', () => {
@@ -37,9 +40,32 @@ test('Lock exclusive', () => {
   const bm = new BrowserManager(console);
   assert.strictEqual(bm.acquireLock('r1'), true);
   assert.strictEqual(bm.acquireLock('r2'), false);
+  assert.strictEqual(bm.releaseLock('r2'), false);
   assert.strictEqual(bm.releaseLock('r1'), true);
   assert.strictEqual(bm.acquireLock('r3'), true);
   bm.releaseLock('r3');
 });
-console.log('\nResults: ' + passed + ' passed, ' + failed + ' failed\n');
-process.exit(failed > 0 ? 1 : 0);
+
+test('Browser lifecycle operations are serialized', async () => {
+  const { BrowserManager } = require('./browser-manager');
+  const bm = new BrowserManager(console);
+  const order = [];
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  await Promise.all([
+    bm._withLifecycle(async () => { order.push('a1'); await delay(20); order.push('a2'); }),
+    bm._withLifecycle(async () => { order.push('b1'); order.push('b2'); }),
+  ]);
+  assert.deepStrictEqual(order, ['a1', 'a2', 'b1', 'b2']);
+});
+
+test('Adapter wait exits cleanly when page is already closed', async () => {
+  const { ChatGPTAdapter } = require('./chatgpt-adapter');
+  const adapter = new ChatGPTAdapter({ isClosed: () => true }, console);
+  const result = await adapter.waitForAny(['#anything'], { timeout: 25 });
+  assert.strictEqual(result, null);
+});
+
+Promise.all(pending).then(() => {
+  console.log('\nResults: ' + passed + ' passed, ' + failed + ' failed\n');
+  process.exit(failed > 0 ? 1 : 0);
+});

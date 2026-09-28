@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const { config } = require('./config');
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const SELECTORS = {
   composer: [
@@ -60,7 +61,7 @@ class ChatGPTAdapter {
           }
         } catch (e) {}
       }
-      await this.page.waitForTimeout(300);
+      await sleep(300);
     }
     return null;
   }
@@ -141,7 +142,7 @@ class ChatGPTAdapter {
 
       if (clicked) {
         this.log.info('New chat click attempt=' + attempt);
-        await this.page.waitForTimeout(1000);
+        await sleep(1000);
         try { await this.page.keyboard.press('Escape'); } catch (e) {}
       } else {
         this.log.info('New chat via navigation attempt=' + attempt);
@@ -211,7 +212,7 @@ class ChatGPTAdapter {
         }
       }, prompt);
     }
-    await this.page.waitForTimeout(300);
+    await sleep(300);
     let current = await this.getComposerText();
     if (!current || this.normalizePromptText(current) !== this.normalizePromptText(prompt)) {
       await found.element.click().catch(function() {});
@@ -226,7 +227,7 @@ class ChatGPTAdapter {
           el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
         }
       }, prompt);
-      await this.page.waitForTimeout(200);
+      await sleep(200);
       current = await this.getComposerText();
     }
     return current;
@@ -253,7 +254,7 @@ class ChatGPTAdapter {
     const send = await this.waitForAny(SELECTORS.sendButton, { timeout: 8000 });
     if (send) {
       const disabled = await send.element.isDisabled().catch(function() { return false; });
-      if (disabled) await this.page.waitForTimeout(1200);
+      if (disabled) await sleep(1200);
       try { await send.element.click({ timeout: 5000 }); return 'click'; } catch (e) {}
       try { await send.element.click({ force: true, timeout: 3000 }); return 'force-click'; } catch (e2) {}
     }
@@ -344,6 +345,10 @@ class ChatGPTAdapter {
     receipt.conversationUrlBefore = idBefore.url;
     let matched = false;
     while (Date.now() - start < timeout) {
+      if (!this.page || this.page.isClosed()) {
+        receipt.reason = 'page_closed_during_verification';
+        return { ok: false, reason: receipt.reason, receipt: receipt };
+      }
       const newest = await this.getNewestVisibleUserTurn();
       if (newest && newest.visible) {
         receipt.newestTurnLength = newest.normalized.length;
@@ -354,7 +359,7 @@ class ChatGPTAdapter {
           break;
         }
       }
-      await this.page.waitForTimeout(700);
+      await sleep(700);
     }
     if (!matched) {
       receipt.reason = 'newest_user_turn_not_exact_match';
@@ -375,15 +380,19 @@ class ChatGPTAdapter {
       return { ok: false, reason: receipt.reason, receipt: receipt };
     }
     try {
+      if (this.page.isClosed()) {
+        receipt.reason = 'page_closed_before_reload';
+        return { ok: false, reason: receipt.reason, receipt: receipt };
+      }
       await this.page.goto(reloadTarget, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await this.page.waitForTimeout(2500);
+      await sleep(2500);
       const reloadDeadline = Date.now() + 25000;
       let reloadMatch = false;
       while (Date.now() < reloadDeadline) {
         const idAfter = await this.getConversationIdentity();
         const sameId = (idMid.conversationId && idAfter.conversationId && idMid.conversationId === idAfter.conversationId)
           || (idMid.url && idAfter.url && idMid.url.split('?')[0] === idAfter.url.split('?')[0]);
-        if (!sameId) { await this.page.waitForTimeout(800); continue; }
+        if (!sameId) { await sleep(800); continue; }
         const newest = await this.getNewestVisibleUserTurn();
         if (newest && newest.visible && newest.normalized === expected) {
           reloadMatch = true;
@@ -392,7 +401,7 @@ class ChatGPTAdapter {
           receipt.conversationUrlAfter = idAfter.url || receipt.conversationUrlAfter;
           break;
         }
-        await this.page.waitForTimeout(800);
+        await sleep(800);
       }
       if (!reloadMatch) {
         receipt.reason = 'reload_persistence_failed';
