@@ -129,6 +129,109 @@ app.get('/setup', (req, res) => {
   res.type('html').send(sc.getSetupPageHtml());
 });
 
+
+/* Manual owner-only reconnect surface. Preserves the existing /data profile and current proxy. */
+function reconnectPageOrRedirect(req, res) {
+  res.sendFile(path.join(__dirname, '..', 'public', 'reconnect.html'));
+}
+
+async function reconnectEnsurePage() {
+  const bm = getBrowserManager(logger);
+  const launched = await bm.ensureBrowser({ headless: config.headless });
+  const page = launched.page;
+  const url = page.url() || '';
+  if (!/chatgpt.com|openai.com/i.test(url)) {
+    await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    await page.waitForTimeout(2500);
+  }
+  return { bm, page };
+}
+
+app.get('/reconnect', reconnectPageOrRedirect);
+
+app.post('/reconnect/start', controlLimiter, requireOwner, async (req, res) => {
+  try {
+    const current = getRunExecutor(logger).getStatus();
+    if (current.locked) return res.status(409).json({ ok: false, error: 'Worker is running; retry when it is idle.' });
+    const { bm, page } = await reconnectEnsurePage();
+    res.json({ ok: true, url: page.url(), proxy: bm.activeProxy || null });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/reconnect/status', controlLimiter, requireOwner, async (req, res) => {
+  try {
+    const { page, bm } = await reconnectEnsurePage();
+    const adapter = new ChatGPTAdapter(page, logger);
+    const pageState = await adapter.detectPageState();
+    const title = await page.title().catch(() => '');
+    const body = await page.evaluate(() => ((document.body && document.body.innerText) || '').slice(0, 1200)).catch(() => '');
+    const challenge = /just a moment|attention required|checking your browser|verif(y|ying).{0,30}human|security check/i.test(title + ' ' + body);
+    const authed = await adapter.isAuthenticated().catch(() => false);
+    res.json({
+      ok: true,
+      state: pageState,
+      authenticated: authed,
+      cloudflare: challenge,
+      title,
+      url: page.url(),
+      proxy: bm.activeProxy || null
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/reconnect/screenshot', controlLimiter, requireOwner, async (req, res) => {
+  try {
+    const { page } = await reconnectEnsurePage();
+    const buffer = await page.screenshot({ type: 'png', fullPage: false });
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(buffer);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/reconnect/action', controlLimiter, requireOwner, async (req, res) => {
+  try {
+    const current = getRunExecutor(logger).getStatus();
+    if (current.locked) return res.status(409).json({ ok: false, error: 'Worker is running; retry when it is idle.' });
+    const { page } = await reconnectEnsurePage();
+    const body = req.body || {};
+    const type = String(body.type || '');
+    if (type === 'click') {
+      const x = Number(body.x), y = Number(body.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ ok: false, error: 'x and y required' });
+      await page.mouse.click(x, y, { delay: 40 });
+    } else if (type === 'type') {
+      const value = String(body.text || '');
+      if (body.clear) await page.keyboard.press('Control+A').catch(() => {});
+      if (body.clear) await page.keyboard.press('Backspace').catch(() => {});
+      if (value) await page.keyboard.type(value, { delay: 20 });
+    } else if (type === 'press') {
+      await page.keyboard.press(String(body.key || 'Enter'));
+    } else if (type === 'scroll') {
+      await page.mouse.wheel(0, Number(body.dy) || 400);
+    } else if (type === 'reload') {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+    } else if (type === 'restart') {
+      const bm = getBrowserManager(logger);
+      const relaunched = await bm.restartPreservingSession('manual reconnect');
+      await relaunched.page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      await relaunched.page.waitForTimeout(2500);
+    } else {
+      return res.status(400).json({ ok: false, error: 'Unknown action' });
+    }
+    res.json({ ok: true, url: page.url() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/', (req, res) => {
   res.type('html').send('<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>ERMI</title></head><body style="font-family:system-ui;max-width:640px;margin:2rem auto"><h1>ERMI Worker</h1><p><a href="/setup">Setup</a></p></body></html>');
 });
