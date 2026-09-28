@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ERMI — Manual ChatGPT Reconnect</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#0f1115;color:#eee;margin:0;padding:18px}
+main{max-width:900px;margin:auto}
+.card{background:#1a1d24;border:1px solid #30343d;border-radius:12px;padding:14px;margin:12px 0}
+button{border:0;border-radius:8px;padding:10px 14px;background:#3b82f6;color:#fff;font-weight:600;margin:4px;cursor:pointer}
+button.secondary{background:#2a2d35}
+input{padding:10px;border-radius:8px;border:1px solid #454b57;background:#0f1115;color:#eee;width:100%;box-sizing:border-box;margin:6px 0}
+#shot{width:100%;max-height:70vh;object-fit:contain;background:#000;cursor:crosshair;border-radius:10px}
+.small{font-size:.86rem;color:#aeb4bf}
+.ok{color:#6ee7b7}.warn{color:#fbbf24}.bad{color:#fca5a5}
+</style>
+</head>
+<body>
+<main>
+<div class="card">
+<h2>ERMI manual ChatGPT reconnect</h2>
+<p class="small">This uses the existing Railway Chromium profile and current Termux/Pinggy proxy. It does not clear or replace cookies.</p>
+<label class="small">OWNER_TOKEN</label>
+<input id="token" type="password" autocomplete="off" placeholder="Paste the same owner token you already use for ERMI control"/>
+<button id="start">Open ChatGPT browser</button>
+<button id="restart" class="secondary">Restart browser, keep profile</button>
+<button id="reload" class="secondary">Reload</button>
+<div id="status" class="small">Idle</div>
+</div>
+<div class="card">
+<img id="shot" alt="Live browser view"/>
+<div>
+<input id="text" type="text" placeholder="Type into the server browser"/>
+<button id="type">Type</button>
+<button id="enter" class="secondary">Enter</button>
+<button id="clear" class="secondary">Clear</button>
+<button id="up" class="secondary">Scroll ↑</button>
+<button id="down" class="secondary">Scroll ↓</button>
+</div>
+<p class="small">Tap the screenshot to click. Complete any Cloudflare check or ChatGPT sign-in here. The browser stays on the same proxy.</p>
+</div>
+</main>
+<script>
+const tokenEl=document.getElementById('token');
+const statusEl=document.getElementById('status');
+const shot=document.getElementById('shot');
+const textEl=document.getElementById('text');
+function headers(){return {Authorization:'Bearer '+tokenEl.value, 'Content-Type':'application/json'};}
+async function call(path,method='GET',body){
+  const r=await fetch(path,{method,headers:headers(),body:body?JSON.stringify(body):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+  return j;
+}
+async function refresh(){
+  try{
+    const j=await call('/reconnect/status');
+    const cls=j.cloudflare?'warn':(j.authenticated?'ok':'small');
+    statusEl.className=cls;
+    statusEl.textContent=(j.cloudflare?'Cloudflare challenge: solve it here. ':j.authenticated?'Authenticated. ':'Not authenticated yet. ')
+      +'state='+j.state+' url='+j.url+' proxy='+j.proxy;
+    shot.src='/reconnect/screenshot?token='+encodeURIComponent(tokenEl.value)+'&t='+Date.now();
+  }catch(e){statusEl.textContent=e.message;}
+}
+async function action(type,extra){
+  try{await call('/reconnect/action','POST',Object.assign({type},extra||{})); await refresh();}catch(e){statusEl.textContent=e.message;}
+}
+document.getElementById('start').onclick=async()=>{try{await call('/reconnect/start','POST',{});await refresh();}catch(e){statusEl.textContent=e.message;}};
+document.getElementById('restart').onclick=()=>action('restart');
+document.getElementById('reload').onclick=()=>action('reload');
+document.getElementById('type').onclick=()=>{const v=textEl.value;if(v)action('type',{text:v});};
+document.getElementById('enter').onclick=()=>action('press',{key:'Enter'});
+document.getElementById('clear').onclick=()=>action('type',{clear:true});
+document.getElementById('up').onclick=()=>action('scroll',{dy:-400});
+document.getElementById('down').onclick=()=>action('scroll',{dy:400});
+shot.onclick=(e)=>{
+  const rect=shot.getBoundingClientRect();
+  const x=Math.round((e.clientX-rect.left)*(shot.naturalWidth/rect.width));
+  const y=Math.round((e.clientY-rect.top)*(shot.naturalHeight/rect.height));
+  action('click',{x,y});
+};
+setInterval(()=>{if(tokenEl.value)refresh();},2500);
+</script>
+</body>
+</html>
