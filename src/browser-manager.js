@@ -5,12 +5,7 @@ const path = require('path');
 const { config, getProxyServer } = require('./config');
 const COOKIES_PATH = path.join(config.dataPath, 'chatgpt-cookies.json');
 
-const STEALTH_INIT = `
-(() => {
-  // Keep the browser otherwise native; only hide the automation flag.
-  try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (e) {}
-})();
-`;
+const STEALTH_INIT = '';
 
 class BrowserManager {
   constructor(logger) {
@@ -69,7 +64,6 @@ class BrowserManager {
     this.log.info('Launch Chromium headless=' + headless + ' channel=chromium proxy=' + (proxyServer || 'none'));
 
     const args = [
-      '--disable-blink-features=AutomationControlled',
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-dev-shm-usage',
