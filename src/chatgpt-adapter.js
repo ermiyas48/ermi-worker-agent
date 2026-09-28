@@ -34,10 +34,6 @@ const SELECTORS = {
     'button[aria-label="New Chat"]',
     'a[aria-label="New Chat"]',
     '[data-testid="new-chat-button"]',
-    'a[href="/?noauth_recent_chat_failed=1"]',
-    'nav a[href="/"]',
-    'a[href="/?model="]',
-    'a[href="/"]',
   ],
   plusButton: ['button[aria-label="Attach files"]', 'button[aria-label="Upload files and more"]', 'button[aria-label*="Attach"]', 'button[data-testid="composer-plus-btn"]'],
   loginButton: ['button[data-testid="login-button"]', 'button:has-text("Log in")', 'button:has-text("Sign up")'],
@@ -103,35 +99,30 @@ class ChatGPTAdapter {
     const found = await this.waitForComposer(timeout || 8000);
     if (!found) return null;
     try {
-      const ok = await found.element.evaluate(function(el) {
+      await found.element.evaluate(function(el) {
         if (!el) return false;
         const style = window.getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-        const r = el.getBoundingClientRect();
-        if (r.width < 2 || r.height < 2) return false;
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
         if (el.getAttribute && el.getAttribute('contenteditable') === 'false') return false;
         if (el.disabled) return false;
         return true;
       });
-      if (!ok) return null;
       return found;
     } catch (e) {
-      return null;
+      return found;
     }
   }
   async openNewChat() {
     const target = config.chatgptNewChatUrl || config.chatgptUrl || 'https://chatgpt.com/';
-    const before = await this.getConversationIdentity().catch(function() { return { url: null, conversationId: null }; });
-    const beforeIsConversation = !!(before && before.conversationId) || /chatgpt\.com\/c\//i.test((before && before.url) || '');
-
-    if (!beforeIsConversation) {
-      const homeComposer = await this.isComposerUsable(2000);
-      if (homeComposer) {
-        this.log.info('Already on home/new-chat with usable composer');
+    let usable = await this.isComposerUsable(4000);
+    if (usable) {
+      const id = await this.getConversationIdentity().catch(function() { return {}; });
+      const onThread = !!(id && id.conversationId) || /chatgpt\.com\/c\//i.test((id && id.url) || '');
+      if (!onThread) {
+        this.log.info('Already on home with usable composer');
         return true;
       }
     }
-
     for (let attempt = 1; attempt <= 3; attempt++) {
       let clicked = false;
       try {
@@ -139,45 +130,33 @@ class ChatGPTAdapter {
       } catch (e) {
         this.log.warn('New chat click error attempt=' + attempt + ': ' + e.message);
       }
-
       if (clicked) {
         this.log.info('New chat click attempt=' + attempt);
-        await sleep(1000);
+        await sleep(1200);
         try { await this.page.keyboard.press('Escape'); } catch (e) {}
       } else {
-        this.log.info('New chat via navigation attempt=' + attempt);
+        this.log.info('New chat via home navigation attempt=' + attempt);
         try {
           await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
         } catch (e) {
           this.log.warn('New chat navigation failed attempt=' + attempt + ': ' + e.message);
         }
+        await sleep(1500);
+        try { await this.page.keyboard.press('Escape'); } catch (e) {}
       }
-
-      try { await this.page.waitForLoadState('domcontentloaded', { timeout: 8000 }); } catch (e) {}
-      const usable = await this.isComposerUsable(12000);
-      if (!usable) {
-        this.log.warn('Composer not usable after new chat attempt=' + attempt);
-        continue;
-      }
-
-      const after = await this.getConversationIdentity().catch(function() { return { url: null, conversationId: null }; });
-      const sameConversation = !!before.conversationId && !!after.conversationId &&
-        before.conversationId === after.conversationId;
-
-      if (!beforeIsConversation || !sameConversation) {
-        this.log.info('New chat established with usable composer attempt=' + attempt);
+      usable = await this.isComposerUsable(12000);
+      if (usable) {
+        this.log.info('Usable composer present after new-chat attempt=' + attempt);
         return true;
       }
-
-      this.log.warn('Composer exists but old conversation identity remains attempt=' + attempt);
-      try {
-        await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      } catch (e) {
-        this.log.warn('Forced home navigation failed: ' + e.message);
-      }
+      this.log.warn('Composer not usable after new chat attempt=' + attempt);
     }
-
-    this.log.warn('openNewChat: no confirmed new-chat composer');
+    usable = await this.isComposerUsable(8000);
+    if (usable) {
+      this.log.info('Reusing usable composer for send (new-thread not confirmed)');
+      return true;
+    }
+    this.log.warn('openNewChat: no usable composer');
     return false;
   }
   async getComposerText() {
@@ -246,9 +225,7 @@ class ChatGPTAdapter {
   async verifyPromptExact(expected) {
     const actual = await this.getComposerText();
     if (!actual) return false;
-    const nExp = this.normalizePromptText(expected);
-    const nAct = this.normalizePromptText(actual);
-    return nAct === nExp;
+    return this.normalizePromptText(actual) === this.normalizePromptText(expected);
   }
   async sendMessage() {
     const send = await this.waitForAny(SELECTORS.sendButton, { timeout: 8000 });
@@ -271,19 +248,6 @@ class ChatGPTAdapter {
       if (m) result.conversationId = m[1];
     } catch (e) {}
     try { result.title = await this.page.title(); } catch (e) {}
-    try {
-      const id = await this.page.evaluate(function() {
-        const el = document.querySelector('[data-conversation-id]');
-        if (el) return el.getAttribute('data-conversation-id');
-        const active = document.querySelector('a[href*="/c/"][aria-current="page"], a[href*="/c/"][aria-current="true"], nav a[href*="/c/"][aria-current]');
-        if (active) {
-          const hm = (active.getAttribute('href') || '').match(/\/c\/([A-Za-z0-9_:\-]+)/);
-          if (hm) return hm[1];
-        }
-        return null;
-      });
-      if (id && !result.conversationId) result.conversationId = id;
-    } catch (e) {}
     return result;
   }
   async getVisibleUserTurns() {
@@ -380,10 +344,6 @@ class ChatGPTAdapter {
       return { ok: false, reason: receipt.reason, receipt: receipt };
     }
     try {
-      if (this.page.isClosed()) {
-        receipt.reason = 'page_closed_before_reload';
-        return { ok: false, reason: receipt.reason, receipt: receipt };
-      }
       await this.page.goto(reloadTarget, { waitUntil: 'domcontentloaded', timeout: 45000 });
       await sleep(2500);
       const reloadDeadline = Date.now() + 25000;
@@ -432,33 +392,24 @@ class ChatGPTAdapter {
       if (/just a moment|verif(y|ying).{0,20}human|attention required/i.test(title || '')) return 'CLOUDFLARE';
     } catch (_) {}
     if (url.includes('/auth') || url.includes('login.openai') || url.includes('accounts.google')) return 'AUTH_PAGE';
-
     for (let i = 0; i < SELECTORS.loginButton.length; i++) {
       try {
         const el = await this.page.$(SELECTORS.loginButton[i]);
         if (el && await el.isVisible().catch(function() { return false; })) return 'NOT_AUTHENTICATED';
       } catch (_) {}
     }
-
     for (let i = 0; i < SELECTORS.composer.length; i++) {
       try {
         const el = await this.page.$(SELECTORS.composer[i]);
         if (el && await el.isVisible().catch(function() { return false; })) return 'COMPOSER_PRESENT';
       } catch (_) {}
     }
-
     for (let i = 0; i < SELECTORS.userMenu.length; i++) {
       try {
         const el = await this.page.$(SELECTORS.userMenu[i]);
         if (el && await el.isVisible().catch(function() { return false; })) return 'AUTHENTICATED';
       } catch (_) {}
     }
-
-    try {
-      const history = await this.page.$('nav a[href*="/c/"][aria-current]');
-      if (history) return 'AUTHENTICATED';
-    } catch (_) {}
-
     return 'UNKNOWN';
   }
 }
