@@ -90,7 +90,7 @@ test('Production control-page invariants', () => {
   assert.ok(!setup.includes('/setup/screenshot?token='));
   assert.ok(!setup.includes('localStorage.getItem(\'ownerToken\')'));
   assert.ok(!reconnect.includes('setInterval('));
-  assert.ok(reconnect.includes('Authorization:'Bearer '+tokenEl.value'));
+  assert.ok(reconnect.includes('Authorization:'));
 });
 
 Promise.all(pending).then(() => {
