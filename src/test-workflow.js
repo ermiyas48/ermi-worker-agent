@@ -80,6 +80,7 @@ test('BrowserManager avoids lifecycle re-entry and destructive navigation probe'
 
 test('Production control-page invariants', () => {
   const fs = require('fs');
+  const path = require('path');
   const root = path.join(__dirname, '..');
   const server = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
   const setup = fs.readFileSync(path.join(__dirname, 'setup-controller.js'), 'utf8');
