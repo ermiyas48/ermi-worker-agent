@@ -107,7 +107,13 @@ class BrowserManager {
     try { await this.page.addInitScript(STEALTH_INIT); } catch (e) {}
 
     try {
-      if (fs.existsSync(COOKIES_PATH)) {
+      // launchPersistentContext() keeps cookies/localStorage on disk across
+      // browser restarts. Only use the exported setup cookies as a bootstrap
+      // fallback when the persistent profile has no ChatGPT cookies yet.
+      const existingProfileCookies = await this.context.cookies(['https://chatgpt.com/']).catch(() => []);
+      if (existingProfileCookies.length > 0) {
+        this.log.info('Keeping ' + existingProfileCookies.length + ' cookies from persistent Chromium profile; skipping bootstrap cookie re-apply');
+      } else if (fs.existsSync(COOKIES_PATH)) {
         const raw = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'));
         if (Array.isArray(raw) && raw.length) {
           const transientCf = new Set(['__cf_bm', '_cfuvid', '__cflb']);
@@ -128,7 +134,7 @@ class BrowserManager {
           }).filter(Boolean);
           if (mapped.length) {
             await this.context.addCookies(mapped);
-            this.log.info('Re-applied ' + mapped.length + ' persisted auth/app cookies; skipped ' + skippedCf + ' transient Cloudflare cookies');
+            this.log.info('Bootstrapped ' + mapped.length + ' exported auth/app cookies; skipped ' + skippedCf + ' transient Cloudflare cookies');
           }
         }
       }
@@ -149,6 +155,13 @@ class BrowserManager {
   async close() {
     try { if (this.context) await this.context.close().catch(() => {}); } catch (e) {}
     this.context = null; this.page = null; this.browser = null; this.activeProxy = null;
+  }
+
+  async restartPreservingSession(reason) {
+    const oldProxy = this.activeProxy || null;
+    this.log.warn('Restarting Chromium while preserving persistent profile' + (reason ? ' reason=' + reason : '') + ' proxy=' + (oldProxy || 'none'));
+    await this.close();
+    return this.ensureBrowser({ headless: config.headless });
   }
 
   async launchForSetup() {
