@@ -92,29 +92,44 @@ class RunExecutor {
       let pageState = await adapter.detectPageState();
 
       if (pageState === 'CLOUDFLARE') {
-        this.log.warn('CF challenge — preserving persistent session and restarting Chromium');
-        for (let restartAttempt = 1; restartAttempt <= 2; restartAttempt++) {
-          await sleep(4000);
+        this.log.warn('CF challenge — passive wait up to 55s before any restart');
+        const cfDeadline = Date.now() + 55000;
+        let cleared = false;
+        let tick = 0;
+        while (Date.now() < cfDeadline) {
+          await sleep(3000);
+          tick++;
+          try {
+            await page.mouse.move(80 + (tick * 37) % 400, 100 + (tick * 23) % 300);
+            await page.mouse.wheel(0, 40);
+          } catch (e) {}
           pageState = await adapter.detectPageState();
           if (pageState !== 'CLOUDFLARE') {
-            this.log.info('CF challenge cleared without browser restart attempt=' + restartAttempt);
+            this.log.info('CF cleared after passive wait tick=' + tick + ' state=' + pageState);
+            cleared = true;
             break;
           }
-
+        }
+        if (!cleared) {
+          this.log.warn('CF still present after passive wait — one persistent-profile restart');
           try {
-            const relaunched = await this.bm.restartPreservingSession('cloudflare-challenge attempt=' + restartAttempt);
+            const relaunched = await this.bm.restartPreservingSession('cloudflare-challenge final');
             page = relaunched.page;
             adapter = new ChatGPTAdapter(page, this.log);
             await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await sleep(5000);
-            pageState = await adapter.detectPageState();
-            if (pageState !== 'CLOUDFLARE') {
-              this.log.info('CF challenge cleared after persistent-profile browser restart attempt=' + restartAttempt);
-              break;
+            await sleep(8000);
+            const cfDeadline2 = Date.now() + 30000;
+            while (Date.now() < cfDeadline2) {
+              pageState = await adapter.detectPageState();
+              if (pageState !== 'CLOUDFLARE') {
+                this.log.info('CF cleared after single restart state=' + pageState);
+                break;
+              }
+              await sleep(3000);
+              try { await page.mouse.move(120, 160); } catch (e) {}
             }
-            this.log.warn('CF challenge still present after persistent-profile restart attempt=' + restartAttempt);
           } catch (e) {
-            this.log.warn('CF browser restart failed attempt=' + restartAttempt + ': ' + e.message);
+            this.log.warn('CF browser restart failed: ' + e.message);
           }
         }
       }
