@@ -105,7 +105,7 @@ shot.onclick=(ev)=>{
 };
 async function pollLoop(){
   if(tokenEl.value) await refresh();
-  setTimeout(pollLoop,2500);
+  setTimeout(pollLoop,6000);
 }
 pollLoop();
 </script>

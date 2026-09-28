@@ -147,6 +147,8 @@ class BrowserManager {
         if (Array.isArray(raw) && raw.length) {
           const mapped = raw.map((c) => {
             if (!c || !c.name) return null;
+            const transientCf = new Set(['__cf_bm', '_cfuvid', '__cflb']);
+            if (transientCf.has(String(c.name).toLowerCase())) return null;
             const ss = String(c.sameSite || 'lax').toLowerCase();
             const out = {
               name: c.name,

@@ -32,6 +32,7 @@ function requireOwner(req, res, next) {
 }
 
 const controlLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
+const reconnectLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const MANUAL_RECONNECT_LEASE_MS = 15 * 60 * 1000;
 let manualReconnectUntil = 0;
@@ -199,7 +200,7 @@ async function reconnectEnsurePage(bm) {
 
 app.get('/reconnect', reconnectPageOrRedirect);
 
-app.post('/reconnect/start', controlLimiter, requireOwner, async (req, res) => {
+app.post('/reconnect/start', reconnectLimiter, requireOwner, async (req, res) => {
   try {
     const result = await withBrowserLock('reconnect-start', async (bm) => {
       const { page } = await reconnectEnsurePage(bm);
@@ -212,7 +213,7 @@ app.post('/reconnect/start', controlLimiter, requireOwner, async (req, res) => {
   }
 });
 
-app.get('/reconnect/status', controlLimiter, requireOwner, async (req, res) => {
+app.get('/reconnect/status', reconnectLimiter, requireOwner, async (req, res) => {
   try {
     const result = await withBrowserLock('reconnect-status', async (bm) => {
       const { page } = await reconnectEnsurePage(bm);
@@ -240,7 +241,7 @@ app.get('/reconnect/status', controlLimiter, requireOwner, async (req, res) => {
   }
 });
 
-app.get('/reconnect/screenshot', controlLimiter, requireOwner, async (req, res) => {
+app.get('/reconnect/screenshot', reconnectLimiter, requireOwner, async (req, res) => {
   try {
     const buffer = await withBrowserLock('reconnect-screenshot', async (bm) => {
       const { page } = await reconnectEnsurePage(bm);
@@ -255,7 +256,7 @@ app.get('/reconnect/screenshot', controlLimiter, requireOwner, async (req, res) 
   }
 });
 
-app.post('/reconnect/action', controlLimiter, requireOwner, async (req, res) => {
+app.post('/reconnect/action', reconnectLimiter, requireOwner, async (req, res) => {
   try {
     const result = await withBrowserLock('reconnect-action', async (bm) => {
       let { page } = await reconnectEnsurePage(bm);

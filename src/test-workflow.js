@@ -47,6 +47,17 @@ test('Lock exclusive', () => {
   bm.releaseLock('r3');
 });
 
+test('Transient Cloudflare cookies are not restored across browser restarts', () => {
+  const fs = require('fs');
+  const source = fs.readFileSync(require('path').join(__dirname, 'browser-manager.js'), 'utf8');
+  assert.ok(source.includes('__cf_bm'));
+  assert.ok(source.includes('_cfuvid'));
+  assert.ok(source.includes('__cflb'));
+  assert.ok(source.includes('transientCf'));
+  assert.ok(source.includes("String(c.name).toLowerCase()"));
+  assert.ok(source.includes("const ss = String(c.sameSite || 'lax').toLowerCase()"));
+});
+
 test('Browser lifecycle operations are serialized', async () => {
   const { BrowserManager } = require('./browser-manager');
   const bm = new BrowserManager(console);
@@ -88,10 +99,13 @@ test('Production control-page invariants', () => {
   assert.ok(server.includes('MANUAL_RECONNECT_LEASE_MS'));
   assert.ok(server.includes('manual reconnect lease active'));
   assert.ok(!server.includes('page.waitForTimeout('));
+  assert.ok(server.includes('reconnectLimiter'));
+  assert.ok(setup.includes('sessionStorage.setItem(\'ownerToken\''));
   assert.ok(!setup.includes('/setup/screenshot?token='));
   assert.ok(!setup.includes('localStorage.getItem(\'ownerToken\')'));
   assert.ok(!reconnect.includes('setInterval('));
   assert.ok(reconnect.includes('Authorization:'));
+  assert.ok(reconnect.includes('setTimeout(pollLoop,6000)'));
 });
 
 Promise.all(pending).then(() => {
