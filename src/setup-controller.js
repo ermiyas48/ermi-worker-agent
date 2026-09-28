@@ -274,8 +274,12 @@ img{max-width:100%;border:1px solid #ddd;border-radius:8px;margin-top:.5rem}
 <pre id="pageinfo"></pre>
 </div>
 <script>
-const token=new URLSearchParams(location.search).get('token')||localStorage.getItem('ownerToken')||'';
-if(token)localStorage.setItem('ownerToken',token);
+const urlToken=new URLSearchParams(location.search).get('token')||'';
+if(urlToken){
+  history.replaceState({}, document.title, location.pathname);
+  sessionStorage.setItem('ownerToken',urlToken);
+}
+const token=sessionStorage.getItem('ownerToken')||'';
 const headers=()=>({Authorization:'Bearer '+token,'Content-Type':'application/json'});
 async function refresh(){
   const r=await fetch('/setup/status?detect=1',{headers:headers()});
@@ -297,9 +301,20 @@ document.getElementById('btnImport').onclick=async()=>{
   refresh();
 };
 document.getElementById('btnCheck').onclick=()=>refresh();
-document.getElementById('btnShot').onclick=()=>{
+let setupShotUrl=null;
+document.getElementById('btnShot').onclick=async()=>{
   const img=document.getElementById('shot');img.style.display='block';
-  img.src='/setup/screenshot?token='+encodeURIComponent(token)+'&t='+Date.now();
+  try{
+    const r=await fetch('/setup/screenshot',{headers:headers(),cache:'no-store'});
+    if(!r.ok) throw new Error('Screenshot HTTP '+r.status);
+    const blob=await r.blob();
+    const next=URL.createObjectURL(blob);
+    if(setupShotUrl) URL.revokeObjectURL(setupShotUrl);
+    setupShotUrl=next;
+    img.src=next;
+  }catch(e){
+    document.getElementById('detail').textContent=e.message;
+  }
 };
 refresh();
 </script></body></html>`;

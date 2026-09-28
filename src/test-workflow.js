@@ -78,6 +78,21 @@ test('BrowserManager avoids lifecycle re-entry and destructive navigation probe'
   assert.ok(!section.includes('page.evaluate(() => true)'));
 });
 
+test('Production control-page invariants', () => {
+  const fs = require('fs');
+  const root = path.join(__dirname, '..');
+  const server = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  const setup = fs.readFileSync(path.join(__dirname, 'setup-controller.js'), 'utf8');
+  const reconnect = fs.readFileSync(path.join(root, 'public', 'reconnect.html'), 'utf8');
+  assert.ok(server.includes('MANUAL_RECONNECT_LEASE_MS'));
+  assert.ok(server.includes('manual reconnect lease active'));
+  assert.ok(!server.includes('page.waitForTimeout('));
+  assert.ok(!setup.includes('/setup/screenshot?token='));
+  assert.ok(!setup.includes('localStorage.getItem(\'ownerToken\')'));
+  assert.ok(!reconnect.includes('setInterval('));
+  assert.ok(reconnect.includes('Authorization:'Bearer '+tokenEl.value'));
+});
+
 Promise.all(pending).then(() => {
   console.log('\nResults: ' + passed + ' passed, ' + failed + ' failed\n');
   process.exit(failed > 0 ? 1 : 0);

@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev && node -e "console.log('Playwright runtime version:', require('playwright/package.json').version)"
 COPY . .
-RUN npm test
+RUN node --check src/browser-manager.js  && node --check src/server.js  && node --check src/chatgpt-adapter.js  && node --check src/run-executor.js  && node --check src/setup-controller.js  && npm test
 ENV PROFILE_PATH=/data/profiles/chatgpt
 ENV DATA_PATH=/data/state
 ENV HEADLESS=false

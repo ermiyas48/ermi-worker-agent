@@ -33,6 +33,16 @@ function requireOwner(req, res, next) {
 
 const controlLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const MANUAL_RECONNECT_LEASE_MS = 15 * 60 * 1000;
+let manualReconnectUntil = 0;
+
+function touchManualReconnect() {
+  manualReconnectUntil = Date.now() + MANUAL_RECONNECT_LEASE_MS;
+}
+
+function manualReconnectActive() {
+  return Date.now() < manualReconnectUntil;
+}
 
 async function withBrowserLock(label, fn) {
   const bm = getBrowserManager(logger);
@@ -193,7 +203,8 @@ app.post('/reconnect/start', controlLimiter, requireOwner, async (req, res) => {
   try {
     const result = await withBrowserLock('reconnect-start', async (bm) => {
       const { page } = await reconnectEnsurePage(bm);
-      return { ok: true, url: safePageUrl(page), proxy: bm.activeProxy || null };
+      touchManualReconnect();
+      return { ok: true, url: safePageUrl(page), proxy: bm.activeProxy || null, manualLeaseActive: true };
     });
     res.json(result);
   } catch (e) {
@@ -211,6 +222,7 @@ app.get('/reconnect/status', controlLimiter, requireOwner, async (req, res) => {
       const body = await page.evaluate(() => ((document.body && document.body.innerText) || '').slice(0, 1200)).catch(() => '');
       const challenge = /just a moment|attention required|checking your browser|verif(y|ying).{0,30}human|security check/i.test(title + ' ' + body);
       const authed = await adapter.isAuthenticated().catch(() => false);
+      touchManualReconnect();
       return {
         ok: true,
         state: pageState,
@@ -218,7 +230,8 @@ app.get('/reconnect/status', controlLimiter, requireOwner, async (req, res) => {
         cloudflare: challenge,
         title,
         url: safePageUrl(page),
-        proxy: bm.activeProxy || null
+        proxy: bm.activeProxy || null,
+        manualLeaseActive: true
       };
     });
     res.json(result);
@@ -231,6 +244,7 @@ app.get('/reconnect/screenshot', controlLimiter, requireOwner, async (req, res) 
   try {
     const buffer = await withBrowserLock('reconnect-screenshot', async (bm) => {
       const { page } = await reconnectEnsurePage(bm);
+      touchManualReconnect();
       return page.screenshot({ type: 'png', fullPage: false });
     });
     res.setHeader('Content-Type', 'image/png');
@@ -282,7 +296,8 @@ app.post('/reconnect/action', controlLimiter, requireOwner, async (req, res) => 
         throw error;
       }
       const live = await bm.ensureBrowser({ headless: config.headless });
-      return { ok: true, url: safePageUrl(live.page) };
+      touchManualReconnect();
+      return { ok: true, url: safePageUrl(live.page), manualLeaseActive: true };
     });
     res.json(result);
   } catch (e) {
@@ -314,6 +329,10 @@ if (!config.ownerToken || config.ownerToken.length < 16) {
       if (!getProxyServer()) { logger.info('Auto-run skip: no valid proxy'); return; }
       const executor = getRunExecutor(logger);
       const st = executor.getStatus();
+      if (manualReconnectActive()) {
+        logger.info('Auto-run skip: manual reconnect lease active');
+        return;
+      }
       if (st.locked || (st.state && !['IDLE', 'COMPLETE', 'FAILED', 'NEEDS_REVIEW', 'REAUTH_REQUIRED'].includes(st.state))) {
         logger.info('Auto-run skip: busy state=' + st.state);
         return;
