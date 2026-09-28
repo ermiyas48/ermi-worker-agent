@@ -80,8 +80,8 @@ class RunExecutor {
     try {
       this._transition(STATES.BROWSER_STARTING);
       const launched = await this.bm.ensureBrowser({ headless: config.headless });
-      const page = launched.page;
-      const adapter = new ChatGPTAdapter(page, this.log);
+      let page = launched.page;
+      let adapter = new ChatGPTAdapter(page, this.log);
 
       this._transition(STATES.CHATGPT_LOADING);
       await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -91,22 +91,29 @@ class RunExecutor {
       let pageState = await adapter.detectPageState();
 
       if (pageState === 'CLOUDFLARE') {
-        this.log.warn('CF challenge — bounded recovery window');
-        for (let i = 0; i < 8; i++) {
-          await page.waitForTimeout(3000);
-          try { await page.mouse.move(100 + i * 25, 120 + i * 15); } catch (e) {}
+        this.log.warn('CF challenge — preserving persistent session and restarting Chromium');
+        for (let restartAttempt = 1; restartAttempt <= 2; restartAttempt++) {
+          await page.waitForTimeout(4000);
           pageState = await adapter.detectPageState();
           if (pageState !== 'CLOUDFLARE') {
-            this.log.info('CF challenge cleared after attempt=' + (i + 1));
+            this.log.info('CF challenge cleared without browser restart attempt=' + restartAttempt);
             break;
           }
-          if (i === 2 || i === 5) {
-            this.log.warn('CF challenge still present — reloading attempt=' + (i + 1));
-            try {
-              await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 });
-            } catch (e) {
-              this.log.warn('CF reload failed: ' + e.message);
+
+          try {
+            const relaunched = await this.bm.restartPreservingSession('cloudflare-challenge attempt=' + restartAttempt);
+            page = relaunched.page;
+            adapter = new ChatGPTAdapter(page, this.log);
+            await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+            await page.waitForTimeout(5000);
+            pageState = await adapter.detectPageState();
+            if (pageState !== 'CLOUDFLARE') {
+              this.log.info('CF challenge cleared after persistent-profile browser restart attempt=' + restartAttempt);
+              break;
             }
+            this.log.warn('CF challenge still present after persistent-profile restart attempt=' + restartAttempt);
+          } catch (e) {
+            this.log.warn('CF browser restart failed attempt=' + restartAttempt + ': ' + e.message);
           }
         }
       }
