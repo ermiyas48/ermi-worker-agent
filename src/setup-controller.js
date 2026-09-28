@@ -5,6 +5,7 @@ const { config, isSetupComplete, markSetupComplete } = require('./config');
 const COOKIES_PATH = path.join(config.dataPath, 'chatgpt-cookies.json');
 const { getBrowserManager } = require('./browser-manager');
 const { ChatGPTAdapter } = require('./chatgpt-adapter');
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function mapSameSite(v) {
   if (!v) return 'Lax';
@@ -80,7 +81,7 @@ class SetupController {
     try {
       const { page } = await this.bm.launchForSetup();
       await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(2000);
+      await sleep(2000);
       const info = await this._pageInfo(page);
       return {
         ok: true,
@@ -147,11 +148,11 @@ class SetupController {
         if (!blocked) break;
         this.log.info('CF still present title=' + lastTitle + ' — waiting');
         try { await page.mouse.move(120 + Math.random() * 200, 160 + Math.random() * 100); } catch (e) {}
-        await page.waitForTimeout(2500);
+        await sleep(2500);
       }
 
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
-      await page.waitForTimeout(2500);
+      await sleep(2500);
 
       const adapter = new ChatGPTAdapter(page, this.log);
       let info = await this._pageInfo(page);
@@ -170,7 +171,7 @@ class SetupController {
       }
 
       await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
-      await page.waitForTimeout(4000);
+      await sleep(4000);
       info = await this._pageInfo(page);
       pageState = await adapter.detectPageState();
       authed = await adapter.isAuthenticated();
@@ -208,7 +209,7 @@ class SetupController {
       const adapter = new ChatGPTAdapter(page, this.log);
       if (!page.url().includes('chatgpt.com') && !page.url().includes('openai.com')) {
         await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        await page.waitForTimeout(2000);
+        await sleep(2000);
       }
       const info = await this._pageInfo(page);
       const pageState = await adapter.detectPageState();
@@ -237,7 +238,7 @@ class SetupController {
     const page = await this.bm.getPage();
     if (!page.url().includes('chatgpt') && !page.url().includes('openai')) {
       await page.goto(config.chatgptUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForTimeout(2000);
+      await sleep(2000);
     }
     const info = await this._pageInfo(page);
     const buffer = await page.screenshot({ fullPage: false, type: 'png' });

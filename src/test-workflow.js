@@ -15,7 +15,8 @@ console.log('\n=== ERMI Worker offline tests ===\n');
 test('ERMI prompt exact', () => {
   assert.ok(config.ermiPrompt.includes('You are an ERMI Worker Agent.'));
   assert.ok(config.ermiPrompt.includes('https://app.notion.com/p/3e2d004d2b9e81b5b81dd2cda88a2e21'));
-  assert.ok(config.ermiPrompt.includes('Success = real finished work'));
+  assert.ok(config.ermiPrompt.includes('RUN TARGET: reach 10 distinct material outcome units.'));
+  assert.ok(config.ermiPrompt.includes('STOP RECEIPT: every run must state OUTCOMES COMPLETED = N'));
 });
 test('Prompt hash deterministic', () => {
   const h1 = hashPrompt(config.ermiPrompt);

@@ -117,33 +117,43 @@ app.post('/proxy', controlLimiter, requireOwner, (req, res) => {
 });
 
 app.post('/setup/browser', controlLimiter, requireOwner, async (req, res) => {
-  const sc = getSetupController(logger);
-  const result = await sc.startSetupBrowser();
-  res.status(result.ok ? 200 : 400).json(result);
+  try {
+    const result = await withBrowserLock('setup-browser', async () => getSetupController(logger).startSetupBrowser());
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (e) {
+    res.status(e.code === 'BROWSER_BUSY' ? 409 : 500).json({ ok: false, error: e.message });
+  }
 });
 
 app.post('/setup/cookies', controlLimiter, requireOwner, async (req, res) => {
-  const sc = getSetupController(logger);
-  const result = await sc.importCookies(req.body);
-  res.status(result.ok ? 200 : 400).json(result);
+  try {
+    const result = await withBrowserLock('setup-cookies', async () => getSetupController(logger).importCookies(req.body));
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (e) {
+    res.status(e.code === 'BROWSER_BUSY' ? 409 : 500).json({ ok: false, error: e.message });
+  }
 });
 
 app.get('/setup/status', controlLimiter, requireOwner, async (req, res) => {
-  const sc = getSetupController(logger);
-  if (req.query.detect) {
-    const det = await sc.detectAuthentication();
-    return res.json(Object.assign({}, sc.getStatus(), det));
+  if (!req.query.detect) return res.json(getSetupController(logger).getStatus());
+  try {
+    const result = await withBrowserLock('setup-status', async () => {
+      const sc = getSetupController(logger);
+      const det = await sc.detectAuthentication();
+      return Object.assign({}, sc.getStatus(), det);
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(e.code === 'BROWSER_BUSY' ? 409 : 500).json({ ok: false, error: e.message });
   }
-  res.json(sc.getStatus());
 });
 
 app.get('/setup/screenshot', controlLimiter, requireOwner, async (req, res) => {
   try {
-    const sc = getSetupController(logger);
-    const { buffer } = await sc.takeScreenshot();
+    const { buffer } = await withBrowserLock('setup-screenshot', async () => getSetupController(logger).takeScreenshot());
     res.type('png').send(buffer);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.code === 'BROWSER_BUSY' ? 409 : 500).json({ ok: false, error: e.message });
   }
 });
 
